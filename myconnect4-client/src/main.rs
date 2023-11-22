@@ -3,8 +3,9 @@ use tokio::io::AsyncReadExt;
 use tokio_stream::StreamExt;
 use tonic::Request;
 
-use crate::myconnect4::game_event::Payload::{self};
+use crate::myconnect4::game_event::Event;
 use crate::myconnect4::my_connect4_service_client::MyConnect4ServiceClient;
+use crate::myconnect4::Empty;
 use crate::myconnect4::GameEvent;
 
 pub mod myconnect4 {
@@ -18,6 +19,10 @@ pub struct Args {
     pub username: String,
     /// server address to connect to (scheme://ip:port format)
     pub address: String,
+}
+
+fn cmd_to_evt(cmd: &str) -> Option<Event> {
+    Some(Event::SearchGame(Empty {}))
 }
 
 #[tokio::main]
@@ -35,30 +40,20 @@ async fn main() {
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
 
-    let user_p1 = user.clone();
     tokio::spawn(async move {
         loop {
-            let user_p2 = user_p1.clone();
             let mut cmd = String::from("");
             log::debug!(">>> ");
             tokio::io::stdin().read_to_string(&mut cmd).await.unwrap();
-            log::debug!("Entered: {cmd}");
-            match cmd.as_str() {
-                "search\n" => {
-                    let payload = Payload::SearchGame(myconnect4::Empty {});
-                    tx.send(GameEvent {
-                        src: user_p2,
-                        dst: "*".to_string(),
-                        payload: Some(payload),
-                    })
-                    .await
-                    .unwrap();
-                    log::debug!("Sent searchgame event");
+
+            let event = match cmd_to_evt(&cmd) {
+                Some(cmd) => cmd,
+                None => {
+                    log::error!("Invalid command entered!");
+                    continue;
                 }
-                _ => {
-                    log::debug!("IGNORED");
-                }
-            }
+            };
+            tx.send(GameEvent { event: Some(event) }).await.unwrap();
         }
     });
 
