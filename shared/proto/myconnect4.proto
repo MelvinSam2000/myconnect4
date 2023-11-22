@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package myconnect4;
+
+message Empty {}
+
+message Move {
+  uint32 col = 1;
+}
+
+message GameOver {
+  oneof payload {
+    Winner winner = 1;
+    Empty draw = 2;
+  }
+}
+
+message Winner {
+  string user = 1;
+}
+
+message NewGame {
+  uint64 game_id = 1;
+  string rival = 2;
+}
+
+
+message GameEvent {
+  string src = 1;
+  string dst = 2;
+  oneof payload {
+    Move move = 3;
+    GameOver game_over = 4;
+    Empty search_game = 5;
+    NewGame new_game = 6;
+  }
+}
+
+service MyConnect4Service {
+  rpc StreamEvents (stream GameEvent) returns (stream GameEvent);
+}
