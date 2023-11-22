@@ -1,4 +1,5 @@
 use clap::Parser;
+use tokio::io::AsyncReadExt;
 use tokio_stream::StreamExt;
 use tonic::Request;
 
@@ -39,7 +40,8 @@ async fn main() {
         loop {
             let user_p2 = user_p1.clone();
             let mut cmd = String::from("");
-            std::io::stdin().read_line(&mut cmd).unwrap();
+            log::debug!(">>> ");
+            tokio::io::stdin().read_to_string(&mut cmd).await.unwrap();
             log::debug!("Entered: {cmd}");
             match cmd.as_str() {
                 "search\n" => {
@@ -53,14 +55,15 @@ async fn main() {
                     .unwrap();
                     log::debug!("Sent searchgame event");
                 }
-                _ => {}
+                _ => {
+                    log::debug!("IGNORED");
+                }
             }
         }
     });
 
     let outbound = async_stream::stream! {
         while let Some(evt) = rx.recv().await {
-            log::debug!("Trigger!");
             yield evt;
         }
     };
