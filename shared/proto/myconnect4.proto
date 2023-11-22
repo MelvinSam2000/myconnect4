@@ -8,8 +8,12 @@ message Move {
   uint32 col = 1;
 }
 
+message MoveValid {
+  bool valid = 1;
+}
+
 message GameOver {
-  oneof payload {
+  oneof kind {
     Winner winner = 1;
     Empty draw = 2;
   }
@@ -22,17 +26,17 @@ message Winner {
 message NewGame {
   uint64 game_id = 1;
   string rival = 2;
+  string first_turn = 3;
 }
 
 
 message GameEvent {
-  string src = 1;
-  string dst = 2;
-  oneof payload {
+  oneof event {
     Move move = 3;
-    GameOver game_over = 4;
-    Empty search_game = 5;
-    NewGame new_game = 6;
+    MoveValid move_valid = 4;
+    GameOver game_over = 5;
+    Empty search_game = 6;
+    NewGame new_game = 7;
   }
 }
 
