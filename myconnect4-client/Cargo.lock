@@ -629,6 +629,7 @@ dependencies = [
  "env_logger",
  "log",
  "prost",
+ "regex",
  "tokio",
  "tokio-stream",
  "tonic",

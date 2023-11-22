@@ -1,4 +1,6 @@
 use clap::Parser;
+use myconnect4::Move;
+use regex::Regex;
 use tokio::io::AsyncReadExt;
 use tokio_stream::StreamExt;
 use tonic::Request;
@@ -22,7 +24,18 @@ pub struct Args {
 }
 
 fn cmd_to_evt(cmd: &str) -> Option<Event> {
-    Some(Event::SearchGame(Empty {}))
+    let regex_search = Regex::new(r"^s(earch)?$").ok()?;
+    let regex_move = Regex::new(r"^m(ove)? (\d+)$").ok()?;
+
+    if regex_search.is_match(cmd) {
+        Some(Event::SearchGame(Empty {}))
+    } else if let Some(caps) = regex_move.captures(cmd) {
+        caps.get(2)
+            .and_then(|m| u32::from_str_radix(m.as_str(), 10).ok())
+            .map(|col| Event::Move(Move { col }))
+    } else {
+        None
+    }
 }
 
 #[tokio::main]

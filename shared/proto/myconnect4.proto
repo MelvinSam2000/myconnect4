@@ -26,7 +26,7 @@ message Winner {
 message NewGame {
   uint64 game_id = 1;
   string rival = 2;
-  string first_turn = 3;
+  bool first_turn = 3;
 }
 
 
