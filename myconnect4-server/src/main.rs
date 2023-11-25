@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use log::log_enabled;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -200,9 +201,19 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
                                 continue;
                             }
                         };
-                        let valid = game.play(col as u8);
+                        let valid = game.play(&user, col as usize);
                         let game_over = game.is_gameover();
                         let users = game.users.clone();
+                        let rival = if user == users[0] {
+                            &users[1]
+                        } else {
+                            &users[0]
+                        };
+
+                        if log_enabled!(log::Level::Debug) {
+                            let board = game.board_to_str();
+                            log::debug!("BOARD:\n{board}\n");
+                        }
 
                         Self::server_send(
                             &server.clients,
@@ -210,6 +221,10 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
                             Event::MoveValid(MoveValid { valid }),
                         )
                         .await;
+                        if !valid {
+                            continue;
+                        }
+                        Self::server_send(&server.clients, rival, Event::Move(Move { col })).await;
                         if let Some(game_over) = game_over {
                             Self::server_send(
                                 &server.clients,

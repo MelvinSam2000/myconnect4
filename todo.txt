@@ -1,0 +1,19 @@
+MAJOR FEATURE
+[ ] Android app
+[ ] AI clients
+[ ] User verification service
+[ ] Chatting
+[ ] Disconnection/reconnection
+[ ] Search timeout
+[ ] Improve CLI client error handling
+
+MINOR FEATURE
+[ ] TLS
+[ ] Server admin state query
+[ ] Replace server state with relational in-memory db ?
+[ ] Tracing
+[ ] Binary Optimization for server
+
+MAJOR BUG
+
+MINOR BUG
