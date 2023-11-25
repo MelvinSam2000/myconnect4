@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use log::log_enabled;
+use myconnect4::Winner;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -23,12 +24,15 @@ use tonic::Status;
 
 use crate::myconnect4::game_event;
 use crate::myconnect4::game_event::Event;
+use crate::myconnect4::game_over::Kind;
 use crate::myconnect4::my_connect4_service_server::MyConnect4Service;
 use crate::myconnect4::my_connect4_service_server::MyConnect4ServiceServer;
 use crate::myconnect4::GameEvent;
 use crate::myconnect4::Move;
 use crate::myconnect4::MoveValid;
 use crate::myconnect4::NewGame;
+use crate::myconnect4::User;
+use crate::myconnect4::UserValid;
 use crate::repo::Connect4Repo;
 
 const BUFFER_CHANNEL_MAX: usize = 100;
@@ -43,9 +47,9 @@ struct ServerCore {
 }
 
 impl MyConnect4ServiceImpl {
-    async fn init() -> Self {
+    fn init() -> Self {
         let server = Arc::new(Mutex::new(ServerCore::default()));
-        Self::start_search_queue_task(server.clone()).await;
+        Self::start_search_queue_task(server.clone());
         Self(server)
     }
 
@@ -59,12 +63,9 @@ impl MyConnect4ServiceImpl {
         dst: &str,
         event: game_event::Event,
     ) {
-        let channel = match clients.get(dst) {
-            Some(channel) => channel,
-            None => {
-                log::warn!("Server does not have a channel for user:{dst}");
-                return;
-            }
+        let Some(channel) = clients.get(dst) else {
+            log::warn!("Server does not have a channel for user:{dst}");
+            return;
         };
         if channel
             .send(GameEvent {
@@ -77,7 +78,7 @@ impl MyConnect4ServiceImpl {
         }
     }
 
-    async fn start_search_queue_task(server: Arc<Mutex<ServerCore>>) {
+    fn start_search_queue_task(server: Arc<Mutex<ServerCore>>) {
         let server = server.clone();
         tokio::spawn(async move {
             loop {
@@ -94,6 +95,8 @@ impl MyConnect4ServiceImpl {
                         .expect("Game ID was just created yet it doesnt exist ?!")
                         .user_first
                         .clone();
+
+                    log::info!("New game '{game_id}' created: {user1} vs {user2}");
 
                     Self::server_send(
                         &server.clients,
@@ -146,7 +149,13 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
             })?
             .to_string();
 
-        log::debug!("New stream request from {user}");
+        if !self.0.lock().await.repo.validate_user(&user) {
+            log::warn!("Rejected a connection with invalid user: {user}");
+            return Err(Status::new(Code::Cancelled, "The username is invalid."));
+        }
+        self.0.lock().await.repo.create_user(&user);
+
+        log::info!("User {user} joined.");
 
         let mut stream_in = request.into_inner();
 
@@ -161,9 +170,10 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
                 let evt = match evt {
                     Ok(evt) => evt,
                     Err(err_status) => {
-                        log::info!("Connection with {user} closed.");
+                        log::info!("{user} left.");
+                        server.lock().await.repo.delete_user(&user);
                         match err_status.code() {
-                            Code::Cancelled => {}
+                            Code::Cancelled | Code::Unknown => {}
                             code @ _ => {
                                 log::error!("Connection with {user} dropped due to: {code}");
                             }
@@ -173,33 +183,24 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
                 };
 
                 let GameEvent { event } = evt;
-                let event = match event {
-                    Some(event) => event,
-                    None => {
-                        log::warn!("User {user} sent an empty event. Ignoring.");
-                        continue;
-                    }
+                let Some(event) = event else {
+                    log::warn!("User {user} sent an empty event. Ignoring.");
+                    continue;
                 };
                 log::debug!("Received {event:?} from {user}");
                 match event {
                     Event::Move(Move { col }) => {
                         let mut server = server.lock().await;
-                        let game_id = match server.repo.get_game_id(&user) {
-                            Some(game_id) => game_id,
-                            None => {
-                                log::warn!("User {user} is not in a game right now. Ignoring.");
-                                continue;
-                            }
+                        let Some(game_id) = server.repo.get_game_id(&user) else {
+                            log::warn!("User {user} is not in a game right now. Ignoring.");
+                            continue;
                         };
-                        let game = match server.repo.get_game_mut(game_id) {
-                            Some(game) => game,
-                            None => {
-                                log::error!(
-                                    "User {user} has a game ID but game ID does not have a game. \
-                                     Ignoring."
-                                );
-                                continue;
-                            }
+                        let Some(game) = server.repo.get_game_mut(game_id) else {
+                            log::error!(
+                                "User {user} has a game ID but game ID does not have a game. \
+                                 Ignoring."
+                            );
+                            continue;
                         };
                         let valid = game.play(&user, col as usize);
                         let game_over = game.is_gameover();
@@ -225,7 +226,15 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
                             continue;
                         }
                         Self::server_send(&server.clients, rival, Event::Move(Move { col })).await;
+
                         if let Some(game_over) = game_over {
+                            match game_over.kind.as_ref().unwrap() {
+                                Kind::Winner(Winner { user }) => {
+                                    log::info!("Game {game_id} ended. Winner: {user}");
+                                }
+                                Kind::Draw(_) => log::info!("Game {game_id} ended in a draw."),
+                            }
+
                             Self::server_send(
                                 &server.clients,
                                 &users[0],
@@ -265,6 +274,18 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
             Box::pin(stream_out) as Self::StreamEventsStream
         ))
     }
+
+    async fn validate_username(
+        &self,
+        request: Request<User>,
+    ) -> Result<Response<UserValid>, Status> {
+        let user = request.into_inner().user;
+        let valid = self.0.lock().await.repo.validate_user(&user);
+        if !valid {
+            log::warn!("Invalid username '{user}' tried to join.");
+        }
+        Ok(Response::new(UserValid { valid }))
+    }
 }
 
 #[tokio::main]
@@ -272,7 +293,7 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let addr = "127.0.0.1:50050".parse().expect("Invalid address provided");
-    let service = MyConnect4ServiceImpl::init().await;
+    let service = MyConnect4ServiceImpl::init();
 
     log::debug!("DEBUG logs enabled");
     log::info!("Server listening on {addr}");

@@ -40,6 +40,15 @@ message GameEvent {
   }
 }
 
+message User {
+  string user = 1;
+}
+
+message UserValid {
+  bool valid = 1;
+}
+
 service MyConnect4Service {
   rpc StreamEvents (stream GameEvent) returns (stream GameEvent);
+  rpc ValidateUsername (User) returns (UserValid);
 }

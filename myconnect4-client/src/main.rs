@@ -1,3 +1,6 @@
+use std::io;
+use std::io::Write;
+
 use clap::Parser;
 use myconnect4::Move;
 use regex::Regex;
@@ -9,6 +12,7 @@ use crate::myconnect4::game_event::Event;
 use crate::myconnect4::my_connect4_service_client::MyConnect4ServiceClient;
 use crate::myconnect4::Empty;
 use crate::myconnect4::GameEvent;
+use crate::myconnect4::User;
 
 pub mod myconnect4 {
     tonic::include_proto!("myconnect4");
@@ -31,7 +35,7 @@ fn cmd_to_evt(cmd: &str) -> Option<Event> {
         Some(Event::SearchGame(Empty {}))
     } else if let Some(caps) = regex_move.captures(cmd) {
         caps.get(2)
-            .and_then(|m| u32::from_str_radix(m.as_str(), 10).ok())
+            .and_then(|m| m.as_str().parse::<u32>().ok())
             .map(|col| Event::Move(Move { col }))
     } else {
         None
@@ -44,31 +48,28 @@ async fn main() {
     let address = args.address;
     let user = args.username;
 
-    env_logger::init();
-    log::debug!("DEBUG logs enabled");
-
     let mut client = MyConnect4ServiceClient::connect(address.clone())
         .await
-        .unwrap();
+        .expect("Client could not connect to server");
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
 
-    tokio::spawn(async move {
+    let cli_task = async move {
         loop {
-            let mut cmd = String::from("");
-            log::debug!(">>> ");
+            print!("command# ");
+            let _ = io::stdout().flush();
+            let mut cmd = String::new();
             tokio::io::stdin().read_to_string(&mut cmd).await.unwrap();
+            println!();
 
-            let event = match cmd_to_evt(&cmd) {
-                Some(cmd) => cmd,
-                None => {
-                    log::error!("Invalid command entered!");
-                    continue;
-                }
+            let Some(cmd) = cmd_to_evt(&cmd) else {
+                println!("Invalid command entered!");
+                continue;
             };
-            tx.send(GameEvent { event: Some(event) }).await.unwrap();
+            println!("SEND {cmd:?}");
+            tx.send(GameEvent { event: Some(cmd) }).await.unwrap();
         }
-    });
+    };
 
     let outbound = async_stream::stream! {
         while let Some(evt) = rx.recv().await {
@@ -76,18 +77,40 @@ async fn main() {
         }
     };
 
+    let user_valid_response = client
+        .validate_username(Request::new(User { user: user.clone() }))
+        .await;
+    let user_valid = user_valid_response
+        .expect("Could not validate user with server.")
+        .into_inner()
+        .valid;
+    if !user_valid {
+        eprintln!("Server has rejected this username");
+        return;
+    }
+
     let mut request = Request::new(outbound);
-    request
-        .metadata_mut()
-        .insert("user", user.clone().parse().unwrap());
-    let response = client.stream_events(request).await.unwrap();
+    request.metadata_mut().insert(
+        "user",
+        user.clone()
+            .parse()
+            .expect("Client entered an unparseable username"),
+    );
+    let response = client
+        .stream_events(request)
+        .await
+        .expect("Cannot connect to server!");
     let mut stream = response.into_inner();
-    log::info!("Client successfully connected to {address}");
+    println!("Client successfully connected to {address}");
+
+    tokio::spawn(cli_task);
 
     tokio::spawn(async move {
         while let Some(evt) = stream.next().await {
-            let evt = evt.unwrap();
-            log::info!("RECV {evt:?}");
+            match evt {
+                Ok(evt) => println!("RECV {evt:?}"),
+                Err(_) => println!("Disconnected from server"),
+            }
         }
     })
     .await

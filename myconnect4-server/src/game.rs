@@ -78,7 +78,7 @@ impl Connect4Game {
     }
 
     fn check_draw(&self) -> bool {
-        self.board[ROWS - 1].iter().all(|x| x.is_some())
+        self.board[ROWS - 1].iter().all(Option::is_some)
     }
 
     fn check_victory(&self) -> Option<bool> {
@@ -87,13 +87,7 @@ impl Connect4Game {
             for j in 0..=COLS - 4 {
                 let winner = (0..4)
                     .map(|k| self.board[i][j + k])
-                    .reduce(|x, y| {
-                        if x == y {
-                            return x;
-                        } else {
-                            return None;
-                        }
-                    })
+                    .reduce(|x, y| if x == y { x } else { None })
                     .flatten();
                 if winner.is_some() {
                     return winner;
@@ -105,13 +99,7 @@ impl Connect4Game {
             for j in 0..COLS {
                 let winner = (0..4)
                     .map(|k| self.board[i + k][j])
-                    .reduce(|x, y| {
-                        if x == y {
-                            return x;
-                        } else {
-                            return None;
-                        }
-                    })
+                    .reduce(|x, y| if x == y { x } else { None })
                     .flatten();
                 if winner.is_some() {
                     return winner;
@@ -123,13 +111,7 @@ impl Connect4Game {
             for j in 0..=COLS - 4 {
                 let winner = (0..4)
                     .map(|k| self.board[i + k][j + k])
-                    .reduce(|x, y| {
-                        if x == y {
-                            return x;
-                        } else {
-                            return None;
-                        }
-                    })
+                    .reduce(|x, y| if x == y { x } else { None })
                     .flatten();
                 if winner.is_some() {
                     return winner;
@@ -141,13 +123,7 @@ impl Connect4Game {
             for j in 0..=COLS - 4 {
                 let winner = (0..4)
                     .map(|k| self.board[i - k][j + k])
-                    .reduce(|x, y| {
-                        if x == y {
-                            return x;
-                        } else {
-                            return None;
-                        }
-                    })
+                    .reduce(|x, y| if x == y { x } else { None })
                     .flatten();
                 if winner.is_some() {
                     return winner;

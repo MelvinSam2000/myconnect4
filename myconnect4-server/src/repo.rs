@@ -1,12 +1,21 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::game::Connect4Game;
+
+/*
+RELATIONAL DIAGRAM:
+
+game 0..1 --- 2 user
+
+*/
 
 #[derive(Default)]
 pub struct Connect4Repo {
     map_user_to_game_id: HashMap<String, u64>,
     map_game_id_to_users: HashMap<u64, [String; 2]>,
     map_game_id_to_game: HashMap<u64, Connect4Game>,
+    set_users: HashSet<String>,
 }
 
 impl Connect4Repo {
@@ -30,8 +39,30 @@ impl Connect4Repo {
 
     pub fn delete_game(&mut self, game_id: u64) {
         self.map_game_id_to_game.remove(&game_id);
-        let users = self.map_game_id_to_users.remove(&game_id).unwrap();
-        self.map_user_to_game_id.remove(&users[0]);
-        self.map_user_to_game_id.remove(&users[1]);
+        if let Some(users) = self.map_game_id_to_users.remove(&game_id) {
+            self.map_user_to_game_id.remove(&users[0]);
+            self.map_user_to_game_id.remove(&users[1]);
+        }
+    }
+
+    pub fn create_user(&mut self, user: &str) {
+        if !self.validate_user(user) {
+            return;
+        }
+        self.set_users.insert(user.to_string());
+    }
+
+    pub fn validate_user(&self, user: &str) -> bool {
+        if !((3..10).contains(&user.len())) {
+            return false;
+        }
+        if self.set_users.contains(user) {
+            return false;
+        }
+        true
+    }
+
+    pub fn delete_user(&mut self, user: &str) {
+        self.set_users.remove(user);
     }
 }
