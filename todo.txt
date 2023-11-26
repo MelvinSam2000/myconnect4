@@ -3,16 +3,18 @@ MAJOR FEATURE
 [ ] AI clients
 [x] User verification service
 [ ] Chatting
-[ ] Disconnection/reconnection
-[ ] Search timeout
+[x] Disconnection
+[ ] Search timeout (maybe not needed w AI)
 [x] Improve CLI client error handling
 
 MINOR FEATURE
 [ ] TLS
-[ ] Server admin state query
+[x] Server admin state query
+[ ] Secure server state query endpoint
 [ ] Replace server state with relational in-memory db ?
 [ ] Tracing
 [x] Binary Optimization for server
+[ ] Look into Actor design pattern ?
 
 MAJOR BUG
 

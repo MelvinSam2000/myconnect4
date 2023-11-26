@@ -25,6 +25,9 @@ pub struct Args {
     pub username: String,
     /// server address to connect to (scheme://ip:port format)
     pub address: String,
+    /// query server state
+    #[arg(short)]
+    pub query: bool,
 }
 
 fn cmd_to_evt(cmd: &str) -> Option<Event> {
@@ -47,10 +50,22 @@ async fn main() {
     let args = Args::parse();
     let address = args.address;
     let user = args.username;
+    let query_state = args.query;
 
     let mut client = MyConnect4ServiceClient::connect(address.clone())
         .await
         .expect("Client could not connect to server");
+
+    if query_state {
+        let state_resp = client
+            .query_state(Request::new(Empty {}))
+            .await
+            .expect("Failed to query server state")
+            .into_inner()
+            .response;
+        println!("{state_resp}");
+        return;
+    }
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
 

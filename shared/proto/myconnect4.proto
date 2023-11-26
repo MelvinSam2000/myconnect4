@@ -35,8 +35,9 @@ message GameEvent {
     Move move = 3;
     MoveValid move_valid = 4;
     GameOver game_over = 5;
-    Empty search_game = 6;
-    NewGame new_game = 7;
+    Empty rival_left = 6;
+    Empty search_game = 7;
+    NewGame new_game = 8;
   }
 }
 
@@ -48,7 +49,12 @@ message UserValid {
   bool valid = 1;
 }
 
+message ServerState {
+  string response = 1;
+}
+
 service MyConnect4Service {
   rpc StreamEvents (stream GameEvent) returns (stream GameEvent);
   rpc ValidateUsername (User) returns (UserValid);
+  rpc QueryState (Empty) returns (ServerState);
 }
