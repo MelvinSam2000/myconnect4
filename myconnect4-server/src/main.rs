@@ -1,6 +1,7 @@
 pub mod myconnect4 {
     tonic::include_proto!("myconnect4");
 }
+pub mod actor;
 pub mod game;
 pub mod repo;
 
