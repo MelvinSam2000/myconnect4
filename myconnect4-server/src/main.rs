@@ -27,10 +27,12 @@ use crate::myconnect4::game_event::Event;
 use crate::myconnect4::game_over::Kind;
 use crate::myconnect4::my_connect4_service_server::MyConnect4Service;
 use crate::myconnect4::my_connect4_service_server::MyConnect4ServiceServer;
+use crate::myconnect4::Empty;
 use crate::myconnect4::GameEvent;
 use crate::myconnect4::Move;
 use crate::myconnect4::MoveValid;
 use crate::myconnect4::NewGame;
+use crate::myconnect4::ServerState;
 use crate::myconnect4::User;
 use crate::myconnect4::UserValid;
 use crate::repo::Connect4Repo;
@@ -39,7 +41,7 @@ const BUFFER_CHANNEL_MAX: usize = 100;
 
 pub struct MyConnect4ServiceImpl(Arc<Mutex<ServerCore>>);
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct ServerCore {
     clients: HashMap<String, Sender<GameEvent>>,
     repo: Connect4Repo,
@@ -79,10 +81,9 @@ impl MyConnect4ServiceImpl {
     }
 
     fn start_search_queue_task(server: Arc<Mutex<ServerCore>>) {
-        let server = server.clone();
         tokio::spawn(async move {
             loop {
-                sleep(Duration::from_millis(100)).await;
+                sleep(Duration::from_millis(1000)).await;
                 let mut server = server.lock().await;
                 if server.search_queue.len() >= 2 {
                     let user1 = server.search_queue.pop().expect("SQ has len >= 2");
@@ -164,14 +165,17 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
 
         let server = self.0.clone();
 
-        //while let Some(evt) = request_rx.recv().await {
         tokio::spawn(async move {
             while let Some(evt) = stream_in.next().await {
                 let evt = match evt {
                     Ok(evt) => evt,
                     Err(err_status) => {
                         log::info!("{user} left.");
-                        server.lock().await.repo.delete_user(&user);
+                        let mut server = server.lock().await;
+                        if let Some(rival) = server.repo.delete_user(&user) {
+                            Self::server_send(&server.clients, &rival, Event::RivalLeft(Empty {}))
+                                .await;
+                        }
                         match err_status.code() {
                             Code::Cancelled | Code::Unknown => {}
                             code @ _ => {
@@ -257,7 +261,10 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
                             log::warn!("{user} sent search game event twice!");
                         }
                     }
-                    Event::GameOver(_) | Event::NewGame(_) | Event::MoveValid(_) => {
+                    Event::GameOver(_)
+                    | Event::NewGame(_)
+                    | Event::MoveValid(_)
+                    | Event::RivalLeft(_) => {
                         log::warn!("Ignoring: {event:?}");
                     }
                 }
@@ -285,6 +292,13 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
             log::warn!("Invalid username '{user}' tried to join.");
         }
         Ok(Response::new(UserValid { valid }))
+    }
+
+    async fn query_state(&self, _: Request<Empty>) -> Result<Response<ServerState>, Status> {
+        let server = self.0.lock().await;
+        Ok(Response::new(ServerState {
+            response: format!("REPO: {:?} SQUEUE {:?}", server.repo, server.search_queue),
+        }))
     }
 }
 

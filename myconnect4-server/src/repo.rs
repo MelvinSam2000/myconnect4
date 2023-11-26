@@ -4,13 +4,13 @@ use std::collections::HashSet;
 use crate::game::Connect4Game;
 
 /*
-RELATIONAL DIAGRAM:
 
+RELATIONAL DIAGRAM:
 game 0..1 --- 2 user
 
 */
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Connect4Repo {
     map_user_to_game_id: HashMap<String, u64>,
     map_game_id_to_users: HashMap<u64, [String; 2]>,
@@ -62,7 +62,22 @@ impl Connect4Repo {
         true
     }
 
-    pub fn delete_user(&mut self, user: &str) {
+    pub fn delete_user(&mut self, user: &str) -> Option<String> {
         self.set_users.remove(user);
+        if let Some(game_id) = self.map_user_to_game_id.remove(user) {
+            self.map_game_id_to_game.remove(&game_id);
+            let users = self
+                .map_game_id_to_users
+                .remove(&game_id)
+                .expect("GameID for this user should exist... MAJOR BUG");
+            let rival = if user == users[0] {
+                users[1].clone()
+            } else {
+                users[0].clone()
+            };
+            self.map_user_to_game_id.remove(&rival);
+            return Some(rival);
+        }
+        None
     }
 }

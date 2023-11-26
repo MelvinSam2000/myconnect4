@@ -6,6 +6,7 @@ use crate::myconnect4::Winner;
 const ROWS: usize = 6;
 const COLS: usize = 7;
 
+#[derive(Debug)]
 pub struct Connect4Game {
     board: [[Option<bool>; COLS]; ROWS],
     pub users: [String; 2],
