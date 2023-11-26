@@ -1,5 +1,6 @@
-pub const CHANNEL_MAX_CAPACITY: usize = 100;
+pub const BUFFER_MAX: usize = 100;
 
 pub mod connector;
+pub mod game;
 pub mod main_controller;
-pub mod match_making;
+pub mod matchmaking;

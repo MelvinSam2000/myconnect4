@@ -90,7 +90,7 @@ impl MyConnect4ServiceImpl {
                     let user1 = server.search_queue.pop().expect("SQ has len >= 2");
                     let user2 = server.search_queue.pop().expect("SQ has len >= 2");
 
-                    let game_id = server.repo.create_new_game([user1.clone(), user2.clone()]);
+                    let game_id = server.repo.create_new_game((user1.clone(), user2.clone()));
                     let user_first = server
                         .repo
                         .get_game_mut(game_id)
@@ -208,13 +208,9 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
                             continue;
                         };
                         let valid = game.play(&user, col as usize);
-                        let game_over = game.is_gameover();
+                        //let game_over = game.is_gameover();
                         let users = game.users.clone();
-                        let rival = if user == users[0] {
-                            &users[1]
-                        } else {
-                            &users[0]
-                        };
+                        let rival = if user == users.0 { &users.1 } else { &users.0 };
 
                         if log_enabled!(log::Level::Debug) {
                             let board = game.board_to_str();
@@ -231,28 +227,6 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
                             continue;
                         }
                         Self::server_send(&server.clients, rival, Event::Move(Move { col })).await;
-
-                        if let Some(game_over) = game_over {
-                            match game_over.kind.as_ref().unwrap() {
-                                Kind::Winner(Winner { user }) => {
-                                    log::info!("Game {game_id} ended. Winner: {user}");
-                                }
-                                Kind::Draw(_) => log::info!("Game {game_id} ended in a draw."),
-                            }
-
-                            Self::server_send(
-                                &server.clients,
-                                &users[0],
-                                Event::GameOver(game_over.clone()),
-                            )
-                            .await;
-                            Self::server_send(
-                                &server.clients,
-                                &users[1],
-                                Event::GameOver(game_over),
-                            )
-                            .await;
-                        }
                     }
                     Event::SearchGame(_) => {
                         let search_queue = &mut server.lock().await.search_queue;

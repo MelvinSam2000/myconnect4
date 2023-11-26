@@ -1,12 +1,3 @@
-use std::collections::HashMap;
-
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::Receiver;
-use tokio::sync::mpsc::Sender;
-
-use super::connector;
-use super::CHANNEL_MAX_CAPACITY;
-
 pub enum MessageFromQueueing {
     GameSearch { user: String },
     GameMove { user: String, col: u8 },

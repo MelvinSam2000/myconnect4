@@ -6,7 +6,8 @@ use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tokio::time::Instant;
 
-const BUFFER_MAX: usize = 100;
+use super::BUFFER_MAX;
+
 const DEFAULT_WAIT_LIMIT: Duration = Duration::from_millis(5000);
 
 #[derive(Debug)]

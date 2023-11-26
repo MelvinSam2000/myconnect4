@@ -1,31 +1,39 @@
-use crate::myconnect4::game_over::Kind;
-use crate::myconnect4::Empty;
-use crate::myconnect4::GameOver;
-use crate::myconnect4::Winner;
+pub(crate) const ROWS: usize = 6;
+pub(crate) const COLS: usize = 7;
 
-const ROWS: usize = 6;
-const COLS: usize = 7;
+pub enum GameOver {
+    Winner(String),
+    Draw,
+}
 
 #[derive(Debug)]
 pub struct Connect4Game {
     board: [[Option<bool>; COLS]; ROWS],
-    pub users: [String; 2],
+    pub users: (String, String),
     pub user_first: String,
     turn: bool,
 }
 
 impl Connect4Game {
-    pub fn new(users: [String; 2]) -> Self {
+    pub fn new(users: (String, String)) -> Self {
         let user_first = if rand::random::<bool>() {
-            users[0].clone()
+            users.0.clone()
         } else {
-            users[1].clone()
+            users.1.clone()
         };
         Self {
             board: [[None; 7]; 6],
             users: users.clone(),
             user_first: user_first.clone(),
-            turn: user_first == users[0],
+            turn: user_first == users.0,
+        }
+    }
+
+    pub fn get_rival(&self, user: &str) -> String {
+        if user == &self.users.0 {
+            self.users.1.clone()
+        } else {
+            self.users.0.clone()
         }
     }
 
@@ -34,7 +42,7 @@ impl Connect4Game {
             log::warn!("Invalid column for move: {col}");
             return false;
         }
-        let player = self.users[0] == user;
+        let player = self.users.0 == user;
         if self.turn != player {
             return false;
         }
@@ -58,21 +66,15 @@ impl Connect4Game {
 
     pub fn is_gameover(&self) -> Option<GameOver> {
         if self.check_draw() {
-            return Some(GameOver {
-                kind: Some(Kind::Draw(Empty {})),
-            });
+            return Some(GameOver::Draw);
         }
 
         if let Some(user0_wins) = self.check_victory() {
-            return Some(GameOver {
-                kind: Some(Kind::Winner(Winner {
-                    user: if user0_wins {
-                        self.users[0].clone()
-                    } else {
-                        self.users[1].clone()
-                    },
-                })),
-            });
+            return Some(GameOver::Winner(if user0_wins {
+                self.users.0.clone()
+            } else {
+                self.users.1.clone()
+            }));
         }
 
         None
@@ -246,7 +248,7 @@ fn test_draw() {
         TFTFTFT",
     ];
 
-    let mut game = Connect4Game::new(["Alice".to_string(), "Bob".to_string()]);
+    let mut game = Connect4Game::new(("Alice".to_string(), "Bob".to_string()));
     for board in positive_test_cases {
         game.board_from_str(board);
         assert!(game.check_draw(), "Positive case failed");
@@ -383,7 +385,7 @@ fn test_victory() {
         )
     ];
 
-    let mut game = Connect4Game::new(["Alice".to_string(), "Bob".to_string()]);
+    let mut game = Connect4Game::new(("Alice".to_string(), "Bob".to_string()));
     for (test_title, board, winner) in test_cases {
         game.board_from_str(board);
         assert_eq!(
