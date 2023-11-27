@@ -123,7 +123,10 @@ async fn main() {
     tokio::spawn(async move {
         while let Some(evt) = stream.next().await {
             match evt {
-                Ok(evt) => println!("RECV {evt:?}"),
+                Ok(evt) => {
+                    let evt = evt.event.unwrap();
+                    println!("RECV {evt:?}")
+                }
                 Err(_) => println!("Disconnected from server"),
             }
         }

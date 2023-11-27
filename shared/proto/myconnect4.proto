@@ -20,7 +20,7 @@ message GameOver {
 }
 
 message Winner {
-  string user = 1;
+  bool user_won = 1;
 }
 
 message NewGame {

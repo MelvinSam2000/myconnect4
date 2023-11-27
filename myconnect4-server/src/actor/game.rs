@@ -29,6 +29,7 @@ pub enum MessageResponse {
         player: String,
         rival: String,
         valid: bool,
+        col: usize,
     },
     GameOverWinner {
         winner: String,
@@ -65,6 +66,7 @@ impl GameActor {
     }
 
     pub fn start(mut self) {
+        log::debug!("Game actor started.");
         tokio::spawn(async move {
             while let Some(req) = self.rx.recv().await {
                 log::debug!("RECV {req:?}");
@@ -125,6 +127,7 @@ impl GameActor {
                                 player: user.clone(),
                                 rival: rival.clone(),
                                 valid,
+                                col,
                             })
                             .await
                             .unwrap();
@@ -151,6 +154,7 @@ impl GameActor {
                                     MessageResponse::GameOverDraw { users }
                                 }
                             };
+                            self.repo.delete_game(game_id);
                             self.tx_res.send(gameover).await.unwrap();
                         }
                     }
@@ -261,7 +265,8 @@ mod tests {
             Some(MessageResponse::MoveValid {
                 player: first.clone(),
                 rival: second.clone(),
-                valid: true
+                valid: true,
+                col: 1,
             })
         );
         tx.send(MessageRequest::Move {
@@ -276,7 +281,8 @@ mod tests {
             Some(MessageResponse::MoveValid {
                 player: first.clone(),
                 rival: second.clone(),
-                valid: false
+                valid: false,
+                col: 1,
             })
         );
         tx.send(MessageRequest::Move {
@@ -291,7 +297,8 @@ mod tests {
             Some(MessageResponse::MoveValid {
                 player: second.clone(),
                 rival: first.clone(),
-                valid: false
+                valid: false,
+                col: COLS + 1,
             })
         );
         tx.send(MessageRequest::Move {
@@ -306,7 +313,8 @@ mod tests {
             Some(MessageResponse::MoveValid {
                 player: second.clone(),
                 rival: first.clone(),
-                valid: true
+                valid: true,
+                col: 1,
             })
         );
     }
@@ -350,7 +358,8 @@ mod tests {
                 Some(MessageResponse::MoveValid {
                     player: first.clone(),
                     rival: second.clone(),
-                    valid: true
+                    valid: true,
+                    col: 0,
                 })
             );
             tx.send(MessageRequest::Move {
@@ -365,7 +374,8 @@ mod tests {
                 Some(MessageResponse::MoveValid {
                     player: second.clone(),
                     rival: first.clone(),
-                    valid: true
+                    valid: true,
+                    col: 1,
                 })
             );
         }
@@ -381,7 +391,8 @@ mod tests {
             Some(MessageResponse::MoveValid {
                 player: first.clone(),
                 rival: second.clone(),
-                valid: true
+                valid: true,
+                col: 0,
             })
         );
         let resp = rx.recv().await;

@@ -8,7 +8,7 @@ use tokio::time::Instant;
 
 use super::BUFFER_MAX;
 
-const DEFAULT_WAIT_LIMIT: Duration = Duration::from_millis(5000);
+const DEFAULT_WAIT_LIMIT: Duration = Duration::from_millis(10000);
 
 #[derive(Debug)]
 pub enum MessageRequest {
@@ -60,6 +60,7 @@ impl MatchMakingActor {
         let tx_res = self.tx_res.clone();
         let queue = self.queue.clone();
         let wait_limit = self.wait_limit;
+        log::debug!("MatchMaking actor started.");
         // main task
         tokio::spawn(async move {
             while let Some(req) = self.rx.recv().await {
