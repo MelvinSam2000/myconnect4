@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::sync::RwLock;
 
 use super::game::MessageRequest as GReq;
@@ -10,13 +12,19 @@ use super::matchmaking::MatchMakingActor;
 use super::matchmaking::MessageRequest as MMReq;
 use super::matchmaking::MessageResponse as MMRes;
 use super::BUFFER_MAX;
+use crate::actor;
 use crate::actor::game::GameActor;
 
 #[derive(Debug)]
 pub enum MessageRequest {
     SearchGame,
-    Move { col: usize },
+    Move {
+        col: usize,
+    },
     UserLeft,
+    QueryGetState {
+        respond_to: oneshot::Sender<StatePayload>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -36,6 +44,18 @@ pub enum MessageResponse {
         won: Option<bool>,
     },
     RivalLeft,
+}
+
+#[derive(Debug)]
+pub struct StatePayload {
+    _mm_state: actor::matchmaking::StatePayload,
+    _g_state: actor::game::StatePayload,
+    _c_state: ControllerStatePayload,
+}
+
+#[derive(Debug)]
+pub struct ControllerStatePayload {
+    pub users: HashSet<String>,
 }
 
 pub struct MainControllerActor {
@@ -112,6 +132,9 @@ impl MainControllerActor {
                 self.tx_g_req.send(GReq::Move { user, col }).await.unwrap();
             }
             MessageRequest::UserLeft => {
+                let mut wmap = self.map_tx_resp.write().await;
+                wmap.remove(&user).unwrap();
+                drop(wmap);
                 self.tx_g_req
                     .send(GReq::UserLeft { user: user.clone() })
                     .await
@@ -121,6 +144,29 @@ impl MainControllerActor {
                     .await
                     .unwrap();
             }
+            MessageRequest::QueryGetState { respond_to } => {
+                let (tx_mm, rx_mm) = oneshot::channel();
+                let (tx_g, rx_g) = oneshot::channel();
+                self.tx_mm_req
+                    .send(MMReq::QueryGetState { respond_to: tx_mm })
+                    .await
+                    .unwrap();
+                self.tx_g_req
+                    .send(GReq::QueryGetState { respond_to: tx_g })
+                    .await
+                    .unwrap();
+                let rmap = self.map_tx_resp.read().await;
+                let users = rmap.keys().cloned().collect::<HashSet<String>>();
+                drop(rmap);
+                let mm_state = rx_mm.await.unwrap();
+                let g_state = rx_g.await.unwrap();
+                let state = StatePayload {
+                    _mm_state: mm_state,
+                    _g_state: g_state,
+                    _c_state: ControllerStatePayload { users },
+                };
+                respond_to.send(state).unwrap();
+            }
         }
     }
 
@@ -129,7 +175,7 @@ impl MainControllerActor {
             MMRes::UsersFound { users } => {
                 self.tx_g_req.send(GReq::NewGame { users }).await.unwrap();
             }
-            MMRes::LongWait { user: _ } | MMRes::DebugGetQueueResponse { queue: _ } => {
+            MMRes::LongWait { user: _ } => {
                 log::warn!("Ignoring msg.");
             }
         }
@@ -206,14 +252,8 @@ impl MainControllerActor {
             }
             GRes::GameOverWinner { winner, loser } => {
                 let tx_map = self.map_tx_resp.read().await;
-                let Some(winner_tx) = tx_map.get(&winner) else {
-                    log::error!("Winner does not have a messaging channel.");
-                    return;
-                };
-                let Some(loser_tx) = tx_map.get(&loser) else {
-                    log::error!("Loser does not have a messaging channel.");
-                    return;
-                };
+                let winner_tx = tx_map.get(&winner).unwrap();
+                let loser_tx = tx_map.get(&loser).unwrap();
                 winner_tx
                     .send(MessageResponse::GameOver { won: Some(true) })
                     .await
@@ -225,14 +265,8 @@ impl MainControllerActor {
             }
             GRes::GameOverDraw { users } => {
                 let tx_map = self.map_tx_resp.read().await;
-                let Some(user0_tx) = tx_map.get(&users.0) else {
-                    log::error!("{} does not have a messaging channel.", &users.0);
-                    return;
-                };
-                let Some(user1_tx) = tx_map.get(&users.1) else {
-                    log::error!("{} does not have a messaging channel.", &users.1);
-                    return;
-                };
+                let user0_tx = tx_map.get(&users.0).unwrap();
+                let user1_tx = tx_map.get(&users.1).unwrap();
                 user0_tx
                     .send(MessageResponse::GameOver { won: None })
                     .await

@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tokio::time::Instant;
@@ -12,22 +13,32 @@ const DEFAULT_WAIT_LIMIT: Duration = Duration::from_millis(10000);
 
 #[derive(Debug)]
 pub enum MessageRequest {
-    Search { user: String },
-    CancelSearch { user: String },
+    Search {
+        user: String,
+    },
+    CancelSearch {
+        user: String,
+    },
     Poll,
-    DebugGetQueue,
+    QueryGetState {
+        respond_to: oneshot::Sender<StatePayload>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum MessageResponse {
     UsersFound { users: (String, String) },
     LongWait { user: String },
-    DebugGetQueueResponse { queue: Vec<String> },
 }
 
 struct UserRecord {
     created_at: Instant,
     user: String,
+}
+
+#[derive(Debug)]
+pub struct StatePayload {
+    pub queue: Vec<String>,
 }
 
 pub struct MatchMakingActor {
@@ -102,14 +113,12 @@ impl MatchMakingActor {
                             self.queue.write().await.retain(|u| &u.user != &user);
                         }
                     }
-                    MessageRequest::DebugGetQueue => {
+                    MessageRequest::QueryGetState { respond_to } => {
                         let rqueue = self.queue.read().await;
                         let queue = rqueue.iter().map(|record| &record.user).cloned().collect();
-                        drop(rqueue);
-                        self.tx_res
-                            .send(MessageResponse::DebugGetQueueResponse { queue })
-                            .await
-                            .unwrap();
+                        if let Err(_) = respond_to.send(StatePayload { queue }) {
+                            log::error!("Failed to respond back to query");
+                        }
                     }
                 }
             }

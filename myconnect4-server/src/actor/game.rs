@@ -1,4 +1,5 @@
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use super::BUFFER_MAX;
 use crate::game::GameOver;
@@ -6,9 +7,19 @@ use crate::repo::Connect4Repo;
 
 #[derive(Debug)]
 pub enum MessageRequest {
-    NewGame { users: (String, String) },
-    Move { user: String, col: usize },
-    UserLeft { user: String },
+    NewGame {
+        users: (String, String),
+    },
+    Move {
+        user: String,
+        col: usize,
+    },
+    UserLeft {
+        user: String,
+    },
+    QueryGetState {
+        respond_to: oneshot::Sender<StatePayload>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -49,6 +60,9 @@ pub struct GameActor {
     rx: mpsc::Receiver<MessageRequest>,
     repo: Connect4Repo,
 }
+
+#[derive(Debug)]
+pub struct StatePayload;
 
 impl GameActor {
     pub fn new(tx_res: mpsc::Sender<MessageResponse>) -> Self {
@@ -96,7 +110,7 @@ impl GameActor {
                         let game_id = self.repo.create_new_game(users.clone());
                         let game = self
                             .repo
-                            .get_game_mut(game_id)
+                            .get_game(game_id)
                             .expect("Game was just created...");
                         log::info!("New game '{game_id}' created: {} vs {}", users.0, users.1);
                         self.tx_res
@@ -116,7 +130,7 @@ impl GameActor {
                                 .unwrap();
                             continue;
                         };
-                        let Some(game) = self.repo.get_game_mut(game_id) else {
+                        let Some(game) = self.repo.get_game(game_id) else {
                             log::error!("No game object with game id: {game_id}");
                             continue;
                         };
@@ -166,6 +180,9 @@ impl GameActor {
                                 .await
                                 .unwrap();
                         }
+                    }
+                    MessageRequest::QueryGetState { respond_to } => {
+                        respond_to.send(StatePayload).unwrap();
                     }
                 }
             }

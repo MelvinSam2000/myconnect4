@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use actor::controller;
 use actor::controller::MainControllerActor;
+use actor::controller::MessageRequest;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::sync::RwLock;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
@@ -33,8 +35,6 @@ use crate::myconnect4::Move;
 use crate::myconnect4::MoveValid;
 use crate::myconnect4::NewGame;
 use crate::myconnect4::ServerState;
-use crate::myconnect4::User;
-use crate::myconnect4::UserValid;
 use crate::myconnect4::Winner;
 
 const BUFFER_CHANNEL_MAX: usize = 100;
@@ -217,14 +217,19 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
         ))
     }
 
-    async fn validate_username(&self, _: Request<User>) -> Result<Response<UserValid>, Status> {
-        // TODO: Fix this method
-        Ok(Response::new(UserValid { valid: true }))
-    }
-
     async fn query_state(&self, _: Request<Empty>) -> Result<Response<ServerState>, Status> {
+        let (tx, rx) = oneshot::channel();
+
+        self.tx_req
+            .send((
+                "*".to_string(),
+                MessageRequest::QueryGetState { respond_to: tx },
+            ))
+            .await
+            .unwrap();
+        let state = rx.await.unwrap();
         Ok(Response::new(ServerState {
-            response: "State is not available rn".to_string(),
+            response: format!("{state:?}"),
         }))
     }
 }

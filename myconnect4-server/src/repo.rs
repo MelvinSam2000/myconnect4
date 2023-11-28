@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
 
 use crate::game::Connect4Game;
 
@@ -15,7 +14,6 @@ pub struct Connect4Repo {
     map_user_to_game_id: HashMap<String, u64>,
     map_game_id_to_users: HashMap<u64, (String, String)>,
     map_game_id_to_game: HashMap<u64, Connect4Game>,
-    set_users: HashSet<String>,
 }
 
 impl Connect4Repo {
@@ -29,7 +27,7 @@ impl Connect4Repo {
         game_id
     }
 
-    pub fn get_game_mut(&mut self, game_id: u64) -> Option<&mut Connect4Game> {
+    pub fn get_game(&mut self, game_id: u64) -> Option<&mut Connect4Game> {
         self.map_game_id_to_game.get_mut(&game_id)
     }
 
@@ -45,25 +43,7 @@ impl Connect4Repo {
         }
     }
 
-    pub fn create_user(&mut self, user: &str) {
-        if !self.validate_user(user) {
-            return;
-        }
-        self.set_users.insert(user.to_string());
-    }
-
-    pub fn validate_user(&self, user: &str) -> bool {
-        if !((3..10).contains(&user.len())) {
-            return false;
-        }
-        if self.set_users.contains(user) {
-            return false;
-        }
-        true
-    }
-
     pub fn delete_user(&mut self, user: &str) -> Option<String> {
-        self.set_users.remove(user);
         if let Some(game_id) = self.map_user_to_game_id.remove(user) {
             self.map_game_id_to_game.remove(&game_id);
             let users = self

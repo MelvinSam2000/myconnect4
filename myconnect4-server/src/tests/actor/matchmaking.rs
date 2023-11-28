@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 use tokio::time::sleep;
 
 use crate::actor::matchmaking::*;
@@ -21,14 +22,12 @@ async fn test_normal_matchmaking() {
     .await
     .unwrap();
 
-    tx.send(MessageRequest::DebugGetQueue).await.unwrap();
-    let resp = rx.recv().await;
-    assert_eq!(
-        resp,
-        Some(MessageResponse::DebugGetQueueResponse {
-            queue: vec!["Alice".to_string()]
-        })
-    );
+    let (otx, orx) = oneshot::channel();
+    tx.send(MessageRequest::QueryGetState { respond_to: otx })
+        .await
+        .unwrap();
+    let resp = orx.await.unwrap().queue;
+    assert_eq!(resp, vec!["Alice".to_string()]);
 
     tx.send(MessageRequest::Search {
         user: users.1.clone(),
@@ -38,17 +37,17 @@ async fn test_normal_matchmaking() {
     let resp = rx.recv().await;
     assert_eq!(resp, Some(MessageResponse::UsersFound { users }));
 
-    tx.send(MessageRequest::DebugGetQueue).await.unwrap();
-    let resp = rx.recv().await;
-    assert_eq!(
-        resp,
-        Some(MessageResponse::DebugGetQueueResponse { queue: vec![] })
-    );
+    let (otx, orx) = oneshot::channel();
+    tx.send(MessageRequest::QueryGetState { respond_to: otx })
+        .await
+        .unwrap();
+    let resp = orx.await.unwrap().queue;
+    assert_eq!(resp, Vec::<String>::new());
 }
 
 #[tokio::test]
 async fn test_cancel_search() {
-    let (tx, mut rx) = mpsc::channel(BUFFER_MAX);
+    let (tx, _) = mpsc::channel(BUFFER_MAX);
     let mmactor = MatchMakingActor::new(tx, None);
     let tx = mmactor.get_sender();
     mmactor.start();
@@ -61,17 +60,17 @@ async fn test_cancel_search() {
     tx.send(MessageRequest::CancelSearch { user })
         .await
         .unwrap();
-    tx.send(MessageRequest::DebugGetQueue).await.unwrap();
-    let resp = rx.recv().await;
-    assert_eq!(
-        resp,
-        Some(MessageResponse::DebugGetQueueResponse { queue: vec![] })
-    );
+    let (otx, orx) = oneshot::channel();
+    tx.send(MessageRequest::QueryGetState { respond_to: otx })
+        .await
+        .unwrap();
+    let resp = orx.await.unwrap().queue;
+    assert_eq!(resp, Vec::<String>::new());
 }
 
 #[tokio::test]
 async fn test_duplicate_search() {
-    let (tx, mut rx) = mpsc::channel(BUFFER_MAX);
+    let (tx, _) = mpsc::channel(BUFFER_MAX);
     let mmactor = MatchMakingActor::new(tx, None);
     let tx = mmactor.get_sender();
     mmactor.start();
@@ -84,12 +83,12 @@ async fn test_duplicate_search() {
     tx.send(MessageRequest::Search { user: user.clone() })
         .await
         .unwrap();
-    tx.send(MessageRequest::DebugGetQueue).await.unwrap();
-    let resp = rx.recv().await;
-    assert_eq!(
-        resp,
-        Some(MessageResponse::DebugGetQueueResponse { queue: vec![user] })
-    );
+    let (otx, orx) = oneshot::channel();
+    tx.send(MessageRequest::QueryGetState { respond_to: otx })
+        .await
+        .unwrap();
+    let resp = orx.await.unwrap().queue;
+    assert_eq!(resp, vec![user]);
 }
 
 #[tokio::test]
