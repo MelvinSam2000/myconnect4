@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 use super::game::MessageRequest as GReq;
 use super::game::MessageResponse as GRes;
@@ -19,7 +19,7 @@ pub enum MessageRequest {
     UserLeft,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum MessageResponse {
     NewGame {
         game_id: u64,
@@ -45,7 +45,7 @@ pub struct MainControllerActor {
     rx_g_res: mpsc::Receiver<GRes>,
     tx_req: mpsc::Sender<(String, MessageRequest)>,
     rx_req: mpsc::Receiver<(String, MessageRequest)>,
-    map_tx_resp: Arc<Mutex<HashMap<String, mpsc::Sender<MessageResponse>>>>,
+    map_tx_resp: Arc<RwLock<HashMap<String, mpsc::Sender<MessageResponse>>>>,
 }
 
 impl MainControllerActor {
@@ -69,7 +69,7 @@ impl MainControllerActor {
             rx_g_res,
             tx_req: tx,
             rx_req: rx,
-            map_tx_resp: Arc::new(Mutex::new(HashMap::new())),
+            map_tx_resp: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -77,7 +77,7 @@ impl MainControllerActor {
         self.tx_req.clone()
     }
 
-    pub fn get_tx_map(&self) -> Arc<Mutex<HashMap<String, mpsc::Sender<MessageResponse>>>> {
+    pub fn get_tx_map(&self) -> Arc<RwLock<HashMap<String, mpsc::Sender<MessageResponse>>>> {
         self.map_tx_resp.clone()
     }
 
@@ -130,7 +130,7 @@ impl MainControllerActor {
                 self.tx_g_req.send(GReq::NewGame { users }).await.unwrap();
             }
             MMRes::LongWait { user: _ } | MMRes::DebugGetQueueResponse { queue: _ } => {
-                log::warn!("Ignoring msg.")
+                log::warn!("Ignoring msg.");
             }
         }
     }
@@ -143,13 +143,9 @@ impl MainControllerActor {
                 first_turn,
             } => {
                 let (user0, user1) = users;
-                let map_tx_resp = self.map_tx_resp.lock().await;
-                let Some(tx0) = map_tx_resp.get(&user0) else {
-                    return;
-                };
-                let Some(tx1) = map_tx_resp.get(&user1) else {
-                    return;
-                };
+                let map_tx_resp = self.map_tx_resp.read().await;
+                let tx0 = map_tx_resp.get(&user0).unwrap();
+                let tx1 = map_tx_resp.get(&user1).unwrap();
                 tx0.send(MessageResponse::NewGame {
                     game_id,
                     rival: user1.clone(),
@@ -185,7 +181,7 @@ impl MainControllerActor {
                 valid,
                 col,
             } => {
-                let tx_map = self.map_tx_resp.lock().await;
+                let tx_map = self.map_tx_resp.read().await;
                 if valid {
                     tx_map
                         .get(&player)
@@ -209,7 +205,7 @@ impl MainControllerActor {
                 }
             }
             GRes::GameOverWinner { winner, loser } => {
-                let tx_map = self.map_tx_resp.lock().await;
+                let tx_map = self.map_tx_resp.read().await;
                 let Some(winner_tx) = tx_map.get(&winner) else {
                     log::error!("Winner does not have a messaging channel.");
                     return;
@@ -228,7 +224,7 @@ impl MainControllerActor {
                     .unwrap();
             }
             GRes::GameOverDraw { users } => {
-                let tx_map = self.map_tx_resp.lock().await;
+                let tx_map = self.map_tx_resp.read().await;
                 let Some(user0_tx) = tx_map.get(&users.0) else {
                     log::error!("{} does not have a messaging channel.", &users.0);
                     return;
@@ -248,7 +244,7 @@ impl MainControllerActor {
             }
             GRes::AbortGame { user } => {
                 self.map_tx_resp
-                    .lock()
+                    .read()
                     .await
                     .get(&user)
                     .unwrap()

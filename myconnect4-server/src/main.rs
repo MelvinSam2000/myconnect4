@@ -12,7 +12,7 @@ use std::sync::Arc;
 use actor::controller;
 use actor::controller::MainControllerActor;
 use tokio::sync::mpsc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tonic::transport::Server;
@@ -41,7 +41,7 @@ const BUFFER_CHANNEL_MAX: usize = 100;
 
 pub struct MyConnect4ServiceImpl {
     tx_req: mpsc::Sender<(String, controller::MessageRequest)>,
-    map_tx_resp: Arc<Mutex<HashMap<String, mpsc::Sender<controller::MessageResponse>>>>,
+    map_tx_resp: Arc<RwLock<HashMap<String, mpsc::Sender<controller::MessageResponse>>>>,
 }
 
 impl MyConnect4ServiceImpl {
@@ -96,7 +96,7 @@ impl MyConnect4Service for MyConnect4ServiceImpl {
         let (tx, mut rx) = tokio::sync::mpsc::channel(BUFFER_CHANNEL_MAX);
         let (tx_resp, mut rx_resp) = mpsc::channel(BUFFER_CHANNEL_MAX);
 
-        self.map_tx_resp.lock().await.insert(user.clone(), tx_resp);
+        self.map_tx_resp.write().await.insert(user.clone(), tx_resp);
 
         log::debug!("Registered user channel for {user}");
 
