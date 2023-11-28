@@ -12,7 +12,6 @@ use crate::myconnect4::game_event::Event;
 use crate::myconnect4::my_connect4_service_client::MyConnect4ServiceClient;
 use crate::myconnect4::Empty;
 use crate::myconnect4::GameEvent;
-use crate::myconnect4::User;
 
 pub mod myconnect4 {
     tonic::include_proto!("myconnect4");
@@ -91,18 +90,6 @@ async fn main() {
             yield evt;
         }
     };
-
-    let user_valid_response = client
-        .validate_username(Request::new(User { user: user.clone() }))
-        .await;
-    let user_valid = user_valid_response
-        .expect("Could not validate user with server.")
-        .into_inner()
-        .valid;
-    if !user_valid {
-        eprintln!("Server has rejected this username");
-        return;
-    }
 
     let mut request = Request::new(outbound);
     request.metadata_mut().insert(

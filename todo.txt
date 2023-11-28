@@ -1,11 +1,14 @@
-MAJOR FEATURE
-[ ] Android app
-[ ] AI clients
-[x] User verification service
-[ ] Chatting
+MAJOR FEATURE (SERVER)
+[ ] Bot actor
+[ ] Handle send errors
+[ ] Analytics actor?
 [x] Disconnection
-[ ] Search timeout (maybe not needed w AI)
+[x] Search timeout (maybe not needed w AI)
 [x] Improve CLI client error handling
+
+
+MAJOR FEATURE (CLIENT)
+[ ] Android app
 
 MINOR FEATURE
 [ ] TLS
@@ -14,7 +17,7 @@ MINOR FEATURE
 [ ] Replace server state with relational in-memory db ?
 [ ] Tracing
 [x] Binary Optimization for server
-[ ] Look into Actor design pattern ?
+[x] Look into Actor design pattern ?
 
 MAJOR BUG
 
