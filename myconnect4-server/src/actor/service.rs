@@ -31,13 +31,15 @@ use crate::myconnect4::NewGame;
 use crate::myconnect4::ServerState;
 use crate::myconnect4::Winner;
 
-#[derive(Debug, PartialEq, Eq)]
+const CLIENT_BUFFER_MAX: usize = 100;
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MessageIn {
     pub user: String,
     pub inner: MessageInInner,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum MessageInInner {
     NewGame {
         game_id: u64,
@@ -160,8 +162,8 @@ impl MyConnect4Service for ServiceActor {
 
         let mut stream_in = request.into_inner();
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(BUFFER_MAX);
-        let (tx_in, mut rx_in) = mpsc::channel(BUFFER_MAX);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(CLIENT_BUFFER_MAX);
+        let (tx_in, mut rx_in) = mpsc::channel(CLIENT_BUFFER_MAX);
 
         self.map_clients_out
             .write()

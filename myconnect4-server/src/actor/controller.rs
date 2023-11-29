@@ -3,24 +3,34 @@ use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 
+use super::botmanager as bm;
 use super::game as g;
 use super::matchmaking as mm;
 use super::matchmaking::MatchMakingActor;
 use super::service as s;
 use super::service::ServiceActor;
 use super::BUFFER_MAX;
+use crate::actor::botmanager::BotManagerActor;
 use crate::actor::game::GameActor;
 
 pub struct ActorController {
     tx_mm_in: Sender<mm::MessageIn>,
     rx_mm_out: Receiver<mm::MessageOut>,
     mm_actor: MatchMakingActor,
+
     tx_g_in: Sender<g::MessageIn>,
     rx_g_out: Receiver<g::MessageOut>,
     g_actor: GameActor,
+
     tx_s_in: Sender<s::MessageIn>,
     rx_s_out: Receiver<s::MessageOut>,
     s_actor: Option<ServiceActor>,
+
+    tx_bm_in: Sender<bm::MessageIn>,
+    rx_bm_out: Receiver<bm::MessageOut>,
+    tx_bms_in: Sender<s::MessageIn>,
+    rx_bms_out: Receiver<s::MessageOut>,
+    bm_actor: BotManagerActor,
 }
 
 impl ActorController {
@@ -37,6 +47,12 @@ impl ActorController {
         let s_actor = ServiceActor::new(tx_s_out);
         let tx_s_in = s_actor.get_sender();
 
+        let (tx_bm_out, rx_bm_out) = mpsc::channel(BUFFER_MAX);
+        let (tx_bms_out, rx_bms_out) = mpsc::channel(BUFFER_MAX);
+        let bm_actor = BotManagerActor::new(tx_bm_out, tx_bms_out);
+        let tx_bm_in = bm_actor.get_sender();
+        let tx_bms_in = bm_actor.get_service_sender();
+
         Self {
             tx_mm_in,
             rx_mm_out,
@@ -47,6 +63,11 @@ impl ActorController {
             tx_s_in,
             rx_s_out,
             s_actor: Some(s_actor),
+            tx_bm_in,
+            rx_bm_out,
+            tx_bms_in,
+            rx_bms_out,
+            bm_actor,
         }
     }
 
@@ -63,6 +84,12 @@ impl ActorController {
         let g_actor = GameActor::new(tx_g_out);
         let tx_g_in = g_actor.get_sender();
 
+        let (tx_bm_out, rx_bm_out) = mpsc::channel(BUFFER_MAX);
+        let (tx_bms_out, rx_bms_out) = mpsc::channel(BUFFER_MAX);
+        let bm_actor = BotManagerActor::new(tx_bm_out, tx_bms_out);
+        let tx_bm_in = bm_actor.get_sender();
+        let tx_bms_in = bm_actor.get_service_sender();
+
         Self {
             tx_mm_in,
             rx_mm_out,
@@ -73,6 +100,11 @@ impl ActorController {
             tx_s_in,
             rx_s_out,
             s_actor: None,
+            tx_bm_in,
+            rx_bm_out,
+            tx_bms_in,
+            rx_bms_out,
+            bm_actor,
         }
     }
 
@@ -88,6 +120,11 @@ impl ActorController {
             tx_s_in,
             mut rx_s_out,
             s_actor,
+            tx_bm_in,
+            mut rx_bm_out,
+            tx_bms_in,
+            mut rx_bms_out,
+            bm_actor,
         } = self;
 
         if let Some(s_actor) = s_actor {
@@ -98,6 +135,7 @@ impl ActorController {
 
         mm_actor.start();
         g_actor.start();
+        bm_actor.start();
 
         log::debug!("Controller actor started.");
         let _ = tokio::spawn(async move {
@@ -107,13 +145,17 @@ impl ActorController {
                         log::debug!("RECV {msg:?} from S actor");
                         Self::handle_msg_s_out(&tx_mm_in, &tx_g_in, msg).await;
                     }
+                    Some(msg) = rx_bms_out.recv() => {
+                        log::debug!("RECV {msg:?} from BM actor");
+                        Self::handle_msg_s_out(&tx_mm_in, &tx_g_in, msg).await;
+                    }
                     Some(msg) = rx_mm_out.recv() => {
                         log::debug!("RECV {msg:?} from MM actor");
-                        Self::handle_msg_mm_out(&tx_g_in, msg).await;
+                        Self::handle_msg_mm_out(&tx_g_in, &tx_bm_in, msg).await;
                     },
                     Some(msg) = rx_g_out.recv() => {
                         log::debug!("RECV {msg:?} from G actor");
-                        Self::handle_msg_g_out(&tx_s_in, &tx_mm_in, msg).await;
+                        Self::handle_msg_g_out(&tx_s_in, &tx_bms_in, &tx_mm_in, msg).await;
                     }
                 }
             }
@@ -165,19 +207,24 @@ impl ActorController {
         }
     }
 
-    async fn handle_msg_mm_out(tx_g_in: &Sender<g::MessageIn>, msg: mm::MessageOut) {
+    async fn handle_msg_mm_out(
+        tx_g_in: &Sender<g::MessageIn>,
+        tx_bm_in: &Sender<bm::MessageIn>,
+        msg: mm::MessageOut,
+    ) {
         match msg {
             mm::MessageOut::UsersFound { users } => {
                 tx_g_in.send(g::MessageIn::NewGame { users }).await.unwrap();
             }
             mm::MessageOut::LongWait { user: _ } => {
-                log::warn!("Ignoring msg.");
+                tx_bm_in.send(bm::MessageIn::QueueOne).await.unwrap()
             }
         }
     }
 
     async fn handle_msg_g_out(
         tx_s_in: &Sender<s::MessageIn>,
+        tx_bms_in: &Sender<s::MessageIn>,
         tx_mm_in: &Sender<mm::MessageIn>,
         msg: g::MessageOut,
     ) {
@@ -188,28 +235,32 @@ impl ActorController {
                 first_turn,
             } => {
                 let (user0, user1) = users;
-                tx_s_in
-                    .send(s::MessageIn {
+                Self::send_to_service(
+                    tx_s_in,
+                    tx_bms_in,
+                    s::MessageIn {
                         user: user0.clone(),
                         inner: s::MessageInInner::NewGame {
                             game_id,
                             rival: user1.clone(),
                             first_turn: first_turn == user0,
                         },
-                    })
-                    .await
-                    .unwrap();
-                tx_s_in
-                    .send(s::MessageIn {
+                    },
+                )
+                .await;
+                Self::send_to_service(
+                    tx_s_in,
+                    tx_bms_in,
+                    s::MessageIn {
                         user: user1.clone(),
                         inner: s::MessageInInner::NewGame {
                             game_id,
                             rival: user0.clone(),
                             first_turn: first_turn == user1,
                         },
-                    })
-                    .await
-                    .unwrap();
+                    },
+                )
+                .await;
             }
             g::MessageOut::UserAlreadyInGame {
                 reject_users,
@@ -232,71 +283,96 @@ impl ActorController {
                 col,
             } => {
                 if valid {
-                    tx_s_in
-                        .send(s::MessageIn {
+                    Self::send_to_service(
+                        tx_s_in,
+                        tx_bms_in,
+                        s::MessageIn {
                             user: player,
                             inner: s::MessageInInner::MoveValid { valid: true },
-                        })
-                        .await
-                        .unwrap();
-                    tx_s_in
-                        .send(s::MessageIn {
+                        },
+                    )
+                    .await;
+                    Self::send_to_service(
+                        tx_s_in,
+                        tx_bms_in,
+                        s::MessageIn {
                             user: rival,
                             inner: s::MessageInInner::RivalMove { col },
-                        })
-                        .await
-                        .unwrap();
+                        },
+                    )
+                    .await;
                 } else {
-                    tx_s_in
-                        .send(s::MessageIn {
+                    Self::send_to_service(
+                        tx_s_in,
+                        tx_bms_in,
+                        s::MessageIn {
                             user: player,
                             inner: s::MessageInInner::MoveValid { valid: false },
-                        })
-                        .await
-                        .unwrap();
+                        },
+                    )
+                    .await;
                 }
             }
             g::MessageOut::GameOverWinner { winner, loser } => {
-                tx_s_in
-                    .send(s::MessageIn {
+                Self::send_to_service(
+                    tx_s_in,
+                    tx_bms_in,
+                    s::MessageIn {
                         user: winner,
                         inner: s::MessageInInner::GameOver { won: Some(true) },
-                    })
-                    .await
-                    .unwrap();
-                tx_s_in
-                    .send(s::MessageIn {
+                    },
+                )
+                .await;
+                Self::send_to_service(
+                    tx_s_in,
+                    tx_bms_in,
+                    s::MessageIn {
                         user: loser,
                         inner: s::MessageInInner::GameOver { won: Some(false) },
-                    })
-                    .await
-                    .unwrap();
+                    },
+                )
+                .await;
             }
             g::MessageOut::GameOverDraw { users } => {
-                tx_s_in
-                    .send(s::MessageIn {
+                Self::send_to_service(
+                    tx_s_in,
+                    tx_bms_in,
+                    s::MessageIn {
                         user: users.0,
                         inner: s::MessageInInner::GameOver { won: None },
-                    })
-                    .await
-                    .unwrap();
-                tx_s_in
-                    .send(s::MessageIn {
+                    },
+                )
+                .await;
+                Self::send_to_service(
+                    tx_s_in,
+                    tx_bms_in,
+                    s::MessageIn {
                         user: users.1,
                         inner: s::MessageInInner::GameOver { won: None },
-                    })
-                    .await
-                    .unwrap();
+                    },
+                )
+                .await;
             }
             g::MessageOut::AbortGame { user } => {
-                tx_s_in
-                    .send(s::MessageIn {
+                Self::send_to_service(
+                    tx_s_in,
+                    tx_bms_in,
+                    s::MessageIn {
                         user,
                         inner: s::MessageInInner::RivalLeft,
-                    })
-                    .await
-                    .unwrap();
+                    },
+                )
+                .await;
             }
         }
+    }
+
+    async fn send_to_service(
+        tx_s_in: &Sender<s::MessageIn>,
+        tx_bms_in: &Sender<s::MessageIn>,
+        msg: s::MessageIn,
+    ) {
+        tx_s_in.send(msg.clone()).await.unwrap();
+        tx_bms_in.send(msg).await.unwrap();
     }
 }
