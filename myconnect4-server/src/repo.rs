@@ -9,7 +9,7 @@ game 0..1 --- 2 user
 
 */
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Connect4Repo {
     map_user_to_game_id: HashMap<String, u64>,
     map_game_id_to_users: HashMap<u64, (String, String)>,

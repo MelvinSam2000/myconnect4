@@ -16,29 +16,29 @@ async fn test_normal_matchmaking() {
 
     let users = ("Alice".to_string(), "Bob".to_string());
 
-    tx.send(MessageRequest::Search {
+    tx.send(MessageIn::Search {
         user: users.0.clone(),
     })
     .await
     .unwrap();
 
     let (otx, orx) = oneshot::channel();
-    tx.send(MessageRequest::QueryGetState { respond_to: otx })
+    tx.send(MessageIn::QueryGetState { respond_to: otx })
         .await
         .unwrap();
     let resp = orx.await.unwrap().queue;
     assert_eq!(resp, vec!["Alice".to_string()]);
 
-    tx.send(MessageRequest::Search {
+    tx.send(MessageIn::Search {
         user: users.1.clone(),
     })
     .await
     .unwrap();
     let resp = rx.recv().await;
-    assert_eq!(resp, Some(MessageResponse::UsersFound { users }));
+    assert_eq!(resp, Some(MessageOut::UsersFound { users }));
 
     let (otx, orx) = oneshot::channel();
-    tx.send(MessageRequest::QueryGetState { respond_to: otx })
+    tx.send(MessageIn::QueryGetState { respond_to: otx })
         .await
         .unwrap();
     let resp = orx.await.unwrap().queue;
@@ -54,14 +54,12 @@ async fn test_cancel_search() {
 
     let user = String::from("Alice");
 
-    tx.send(MessageRequest::Search { user: user.clone() })
+    tx.send(MessageIn::Search { user: user.clone() })
         .await
         .unwrap();
-    tx.send(MessageRequest::CancelSearch { user })
-        .await
-        .unwrap();
+    tx.send(MessageIn::CancelSearch { user }).await.unwrap();
     let (otx, orx) = oneshot::channel();
-    tx.send(MessageRequest::QueryGetState { respond_to: otx })
+    tx.send(MessageIn::QueryGetState { respond_to: otx })
         .await
         .unwrap();
     let resp = orx.await.unwrap().queue;
@@ -77,14 +75,14 @@ async fn test_duplicate_search() {
 
     let user = String::from("Alice");
 
-    tx.send(MessageRequest::Search { user: user.clone() })
+    tx.send(MessageIn::Search { user: user.clone() })
         .await
         .unwrap();
-    tx.send(MessageRequest::Search { user: user.clone() })
+    tx.send(MessageIn::Search { user: user.clone() })
         .await
         .unwrap();
     let (otx, orx) = oneshot::channel();
-    tx.send(MessageRequest::QueryGetState { respond_to: otx })
+    tx.send(MessageIn::QueryGetState { respond_to: otx })
         .await
         .unwrap();
     let resp = orx.await.unwrap().queue;
@@ -101,10 +99,10 @@ async fn test_long_wait() {
 
     let user = String::from("Alice");
 
-    tx.send(MessageRequest::Search { user: user.clone() })
+    tx.send(MessageIn::Search { user: user.clone() })
         .await
         .unwrap();
     sleep(TEST_WAIT_LIMIT * 2).await;
     let resp = rx.recv().await;
-    assert_eq!(resp, Some(MessageResponse::LongWait { user }));
+    assert_eq!(resp, Some(MessageOut::LongWait { user }));
 }

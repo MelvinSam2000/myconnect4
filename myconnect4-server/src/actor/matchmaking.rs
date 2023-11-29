@@ -12,21 +12,21 @@ use super::BUFFER_MAX;
 const DEFAULT_WAIT_LIMIT: Duration = Duration::from_millis(10000);
 
 #[derive(Debug)]
-pub enum MessageRequest {
-    Search {
-        user: String,
-    },
+pub enum MessageIn {
     CancelSearch {
         user: String,
     },
     Poll,
+    Search {
+        user: String,
+    },
     QueryGetState {
         respond_to: oneshot::Sender<StatePayload>,
     },
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum MessageResponse {
+pub enum MessageOut {
     UsersFound { users: (String, String) },
     LongWait { user: String },
 }
@@ -42,33 +42,33 @@ pub struct StatePayload {
 }
 
 pub struct MatchMakingActor {
-    tx_req: mpsc::Sender<MessageRequest>,
-    tx_res: mpsc::Sender<MessageResponse>,
-    rx: mpsc::Receiver<MessageRequest>,
+    tx_in: mpsc::Sender<MessageIn>,
+    tx_out: mpsc::Sender<MessageOut>,
+    rx: mpsc::Receiver<MessageIn>,
     queue: Arc<RwLock<Vec<UserRecord>>>,
     wait_limit: Duration,
 }
 
 impl MatchMakingActor {
-    pub fn new(tx_res: mpsc::Sender<MessageResponse>, wait_limit: Option<Duration>) -> Self {
+    pub fn new(tx_out: mpsc::Sender<MessageOut>, wait_limit: Option<Duration>) -> Self {
         let (tx, rx) = mpsc::channel(BUFFER_MAX);
         let wait_limit = wait_limit.unwrap_or(DEFAULT_WAIT_LIMIT);
         Self {
-            tx_req: tx,
-            tx_res,
+            tx_in: tx,
+            tx_out,
             rx,
             queue: Arc::new(RwLock::new(Vec::new())),
             wait_limit,
         }
     }
 
-    pub fn get_sender(&self) -> mpsc::Sender<MessageRequest> {
-        self.tx_req.clone()
+    pub fn get_sender(&self) -> mpsc::Sender<MessageIn> {
+        self.tx_in.clone()
     }
 
     pub fn start(mut self) {
-        let tx_req = self.tx_req.clone();
-        let tx_res = self.tx_res.clone();
+        let tx_in = self.tx_in.clone();
+        let tx_out = self.tx_out.clone();
         let queue = self.queue.clone();
         let wait_limit = self.wait_limit;
         log::debug!("MatchMaking actor started.");
@@ -77,7 +77,7 @@ impl MatchMakingActor {
             while let Some(req) = self.rx.recv().await {
                 log::debug!("RECV {req:?}");
                 match req {
-                    MessageRequest::Search { user } => {
+                    MessageIn::Search { user } => {
                         let rqueue = self.queue.read().await;
                         if rqueue.iter().any(|record| user == record.user) {
                             log::warn!("Duplicate user {user} trying to search. Ignoring");
@@ -92,28 +92,28 @@ impl MatchMakingActor {
                         drop(wqueue);
 
                         if let Some(users) = Self::poll_for_users(&self.queue).await {
-                            self.tx_res
-                                .send(MessageResponse::UsersFound { users })
+                            self.tx_out
+                                .send(MessageOut::UsersFound { users })
                                 .await
                                 .unwrap();
                         }
                     }
-                    MessageRequest::Poll => {
+                    MessageIn::Poll => {
                         if let Some(users) = Self::poll_for_users(&self.queue).await {
-                            self.tx_res
-                                .send(MessageResponse::UsersFound { users })
+                            self.tx_out
+                                .send(MessageOut::UsersFound { users })
                                 .await
                                 .unwrap();
                         }
                     }
-                    MessageRequest::CancelSearch { user } => {
+                    MessageIn::CancelSearch { user } => {
                         let rqueue = self.queue.read().await;
                         if rqueue.iter().any(|record| user == record.user) {
                             drop(rqueue);
-                            self.queue.write().await.retain(|u| &u.user != &user);
+                            self.queue.write().await.retain(|u| u.user != user);
                         }
                     }
-                    MessageRequest::QueryGetState { respond_to } => {
+                    MessageIn::QueryGetState { respond_to } => {
                         let rqueue = self.queue.read().await;
                         let queue = rqueue.iter().map(|record| &record.user).cloned().collect();
                         if let Err(_) = respond_to.send(StatePayload { queue }) {
@@ -127,7 +127,7 @@ impl MatchMakingActor {
         tokio::spawn(async move {
             loop {
                 sleep(wait_limit).await;
-                tx_req.send(MessageRequest::Poll).await.unwrap();
+                tx_in.send(MessageIn::Poll).await.unwrap();
                 let rqueue = queue.read().await;
                 let users_delayed: Vec<String> = rqueue
                     .iter()
@@ -137,10 +137,7 @@ impl MatchMakingActor {
                     .collect();
                 drop(rqueue);
                 for user in users_delayed {
-                    tx_res
-                        .send(MessageResponse::LongWait { user })
-                        .await
-                        .unwrap();
+                    tx_out.send(MessageOut::LongWait { user }).await.unwrap();
                 }
             }
         });

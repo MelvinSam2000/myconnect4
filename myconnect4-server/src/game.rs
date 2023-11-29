@@ -6,7 +6,7 @@ pub enum GameOver {
     Draw,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Connect4Game {
     board: [[Option<bool>; COLS]; ROWS],
     pub users: (String, String),
@@ -37,7 +37,8 @@ impl Connect4Game {
         }
     }
 
-    pub fn play(&mut self, user: &str, col: usize) -> bool {
+    pub fn play(&mut self, user: &str, col: u8) -> bool {
+        let col = col as usize;
         if col >= COLS {
             log::warn!("Invalid column for move: {col}");
             return false;

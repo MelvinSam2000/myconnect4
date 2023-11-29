@@ -1,47 +1,66 @@
 use tokio::sync::mpsc;
 
 use crate::actor::controller::*;
+use crate::actor::service::MessageIn;
+use crate::actor::service::MessageInInner;
+use crate::actor::service::MessageOut;
+use crate::actor::service::MessageOutInner;
 use crate::actor::BUFFER_MAX;
 
 #[tokio::test]
 async fn test_normal_game() {
-    let controller = MainControllerActor::new();
-    let tx = controller.get_sender();
-    let user_tx = controller.get_tx_map();
-    controller.start();
+    let (tx_in, mut rx_in) = mpsc::channel(BUFFER_MAX);
+    let (tx_out, rx_out) = mpsc::channel(BUFFER_MAX);
 
-    let (tx1, mut rx1) = mpsc::channel(BUFFER_MAX);
-    let (tx2, mut rx2) = mpsc::channel(BUFFER_MAX);
+    let controller = ActorController::new_no_service(tx_in, rx_out);
+
+    tokio::spawn(controller.run_all());
 
     let users = ("Alice".to_string(), "Bob".to_string());
 
-    user_tx.write().await.insert(users.0.clone(), tx1);
-    user_tx.write().await.insert(users.1.clone(), tx2);
+    tx_out
+        .send(MessageOut {
+            user: users.0.clone(),
+            inner: MessageOutInner::SearchGame,
+        })
+        .await
+        .unwrap();
+    tx_out
+        .send(MessageOut {
+            user: users.1.clone(),
+            inner: MessageOutInner::SearchGame,
+        })
+        .await
+        .unwrap();
 
-    tx.send((users.0.clone(), MessageRequest::SearchGame))
-        .await
-        .unwrap();
-    tx.send((users.1.clone(), MessageRequest::SearchGame))
-        .await
-        .unwrap();
-    let res1 = rx1.recv().await;
-    let Some(MessageResponse::NewGame {
-        game_id: gid1,
-        rival: rival1,
-        first_turn: fturn1,
-    }) = res1
+    let res = rx_in.recv().await;
+    let Some(MessageIn {
+        user: user1,
+        inner:
+            MessageInInner::NewGame {
+                game_id: gid1,
+                rival: rival1,
+                first_turn: fturn1,
+            },
+    }) = res
     else {
-        panic!("rx1 did not send newgame");
+        panic!("user 1 did not send newgame");
     };
-    let res2 = rx2.recv().await;
-    let Some(MessageResponse::NewGame {
-        game_id: gid2,
-        rival: rival2,
-        first_turn: fturn2,
-    }) = res2
+
+    let res = rx_in.recv().await;
+    let Some(MessageIn {
+        user: user2,
+        inner:
+            MessageInInner::NewGame {
+                game_id: gid2,
+                rival: rival2,
+                first_turn: fturn2,
+            },
+    }) = res
     else {
-        panic!("rx2 did not send newgame");
+        panic!("user 2 did not send newgame");
     };
+    assert_ne!(user1, user2);
     assert_eq!(gid1, gid2);
     assert_ne!(fturn1, fturn2);
     assert_eq!(users.0, rival2);
@@ -50,41 +69,102 @@ async fn test_normal_game() {
     let users = if fturn1 {
         (users.0, users.1)
     } else {
-        let tmp = rx1;
-        rx1 = rx2;
-        rx2 = tmp;
         (users.1, users.0)
     };
 
     for _ in 0..3 {
         // move 1
-        tx.send((users.0.clone(), MessageRequest::Move { col: 0 }))
+        tx_out
+            .send(MessageOut {
+                user: users.0.clone(),
+                inner: MessageOutInner::Move { col: 0 },
+            })
             .await
             .unwrap();
-        let resp = rx1.recv().await;
-        assert_eq!(resp, Some(MessageResponse::MoveValid { valid: true }));
-        let resp = rx2.recv().await;
-        assert_eq!(resp, Some(MessageResponse::RivalMove { col: 0 }));
+
+        let resp = rx_in.recv().await.unwrap();
+        assert_eq!(
+            resp,
+            MessageIn {
+                user: users.0.clone(),
+                inner: MessageInInner::MoveValid { valid: true }
+            }
+        );
+        let resp = rx_in.recv().await.unwrap();
+        assert_eq!(
+            resp,
+            MessageIn {
+                user: users.1.clone(),
+                inner: MessageInInner::RivalMove { col: 0 }
+            }
+        );
         // move 2
-        tx.send((users.1.clone(), MessageRequest::Move { col: 1 }))
+        tx_out
+            .send(MessageOut {
+                user: users.1.clone(),
+                inner: MessageOutInner::Move { col: 1 },
+            })
             .await
             .unwrap();
-        let resp = rx2.recv().await;
-        assert_eq!(resp, Some(MessageResponse::MoveValid { valid: true }));
-        let resp = rx1.recv().await;
-        assert_eq!(resp, Some(MessageResponse::RivalMove { col: 1 }));
+
+        let resp = rx_in.recv().await.unwrap();
+        assert_eq!(
+            resp,
+            MessageIn {
+                user: users.1.clone(),
+                inner: MessageInInner::MoveValid { valid: true }
+            }
+        );
+        let resp = rx_in.recv().await.unwrap();
+        assert_eq!(
+            resp,
+            MessageIn {
+                user: users.0.clone(),
+                inner: MessageInInner::RivalMove { col: 1 }
+            }
+        );
     }
     // final move
-    tx.send((users.0.clone(), MessageRequest::Move { col: 0 }))
+    // move 1
+    tx_out
+        .send(MessageOut {
+            user: users.0.clone(),
+            inner: MessageOutInner::Move { col: 0 },
+        })
         .await
         .unwrap();
-    let resp = rx1.recv().await;
-    assert_eq!(resp, Some(MessageResponse::MoveValid { valid: true }));
-    let resp = rx2.recv().await;
-    assert_eq!(resp, Some(MessageResponse::RivalMove { col: 0 }));
-    // gameover
-    let resp = rx1.recv().await;
-    assert_eq!(resp, Some(MessageResponse::GameOver { won: Some(true) }));
-    let resp = rx2.recv().await;
-    assert_eq!(resp, Some(MessageResponse::GameOver { won: Some(false) }));
+
+    let resp = rx_in.recv().await.unwrap();
+    assert_eq!(
+        resp,
+        MessageIn {
+            user: users.0.clone(),
+            inner: MessageInInner::MoveValid { valid: true }
+        }
+    );
+    let resp = rx_in.recv().await.unwrap();
+    assert_eq!(
+        resp,
+        MessageIn {
+            user: users.1.clone(),
+            inner: MessageInInner::RivalMove { col: 0 }
+        }
+    );
+    // game over
+    let resp = rx_in.recv().await.unwrap();
+    assert_eq!(
+        resp,
+        MessageIn {
+            user: users.0.clone(),
+            inner: MessageInInner::GameOver { won: Some(true) }
+        }
+    );
+    let resp = rx_in.recv().await.unwrap();
+    assert_eq!(
+        resp,
+        MessageIn {
+            user: users.1.clone(),
+            inner: MessageInInner::GameOver { won: Some(false) }
+        }
+    );
 }

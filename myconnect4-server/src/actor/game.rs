@@ -6,13 +6,13 @@ use crate::game::GameOver;
 use crate::repo::Connect4Repo;
 
 #[derive(Debug)]
-pub enum MessageRequest {
+pub enum MessageIn {
     NewGame {
         users: (String, String),
     },
     Move {
         user: String,
-        col: usize,
+        col: u8,
     },
     UserLeft {
         user: String,
@@ -23,7 +23,7 @@ pub enum MessageRequest {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum MessageResponse {
+pub enum MessageOut {
     NewGame {
         game_id: u64,
         users: (String, String),
@@ -40,7 +40,7 @@ pub enum MessageResponse {
         player: String,
         rival: String,
         valid: bool,
-        col: usize,
+        col: u8,
     },
     GameOverWinner {
         winner: String,
@@ -55,17 +55,19 @@ pub enum MessageResponse {
 }
 
 pub struct GameActor {
-    tx_req: mpsc::Sender<MessageRequest>,
-    tx_res: mpsc::Sender<MessageResponse>,
-    rx: mpsc::Receiver<MessageRequest>,
+    tx_req: mpsc::Sender<MessageIn>,
+    tx_res: mpsc::Sender<MessageOut>,
+    rx: mpsc::Receiver<MessageIn>,
     repo: Connect4Repo,
 }
 
 #[derive(Debug)]
-pub struct StatePayload;
+pub struct StatePayload {
+    _repo: Connect4Repo,
+}
 
 impl GameActor {
-    pub fn new(tx_res: mpsc::Sender<MessageResponse>) -> Self {
+    pub fn new(tx_res: mpsc::Sender<MessageOut>) -> Self {
         let (tx, rx) = mpsc::channel(BUFFER_MAX);
         Self {
             tx_req: tx,
@@ -75,7 +77,7 @@ impl GameActor {
         }
     }
 
-    pub fn get_sender(&self) -> mpsc::Sender<MessageRequest> {
+    pub fn get_sender(&self) -> mpsc::Sender<MessageIn> {
         self.tx_req.clone()
     }
 
@@ -85,21 +87,21 @@ impl GameActor {
             while let Some(req) = self.rx.recv().await {
                 log::debug!("RECV {req:?}");
                 match req {
-                    MessageRequest::NewGame { users } => {
+                    MessageIn::NewGame { users } => {
                         let game0 = self.repo.get_game_id(&users.0);
                         let game1 = self.repo.get_game_id(&users.1);
                         if game0.is_some() || game1.is_some() {
                             let resp = match (game0, game1) {
                                 (None, None) => unreachable!(),
-                                (None, Some(_)) => MessageResponse::UserAlreadyInGame {
+                                (None, Some(_)) => MessageOut::UserAlreadyInGame {
                                     reject_users: vec![users.1],
                                     rematchmake_users: vec![users.0],
                                 },
-                                (Some(_), None) => MessageResponse::UserAlreadyInGame {
+                                (Some(_), None) => MessageOut::UserAlreadyInGame {
                                     reject_users: vec![users.0],
                                     rematchmake_users: vec![users.1],
                                 },
-                                (Some(_), Some(_)) => MessageResponse::UserAlreadyInGame {
+                                (Some(_), Some(_)) => MessageOut::UserAlreadyInGame {
                                     reject_users: vec![users.0, users.1],
                                     rematchmake_users: vec![],
                                 },
@@ -114,7 +116,7 @@ impl GameActor {
                             .expect("Game was just created...");
                         log::info!("New game '{game_id}' created: {} vs {}", users.0, users.1);
                         self.tx_res
-                            .send(MessageResponse::NewGame {
+                            .send(MessageOut::NewGame {
                                 game_id,
                                 users: game.users.clone(),
                                 first_turn: game.user_first.clone(),
@@ -122,10 +124,10 @@ impl GameActor {
                             .await
                             .unwrap();
                     }
-                    MessageRequest::Move { user, col } => {
+                    MessageIn::Move { user, col } => {
                         let Some(game_id) = self.repo.get_game_id(&user) else {
                             self.tx_res
-                                .send(MessageResponse::UserNotInGame { user })
+                                .send(MessageOut::UserNotInGame { user })
                                 .await
                                 .unwrap();
                             continue;
@@ -137,7 +139,7 @@ impl GameActor {
                         let valid = game.play(&user, col);
                         let rival = game.get_rival(&user);
                         self.tx_res
-                            .send(MessageResponse::MoveValid {
+                            .send(MessageOut::MoveValid {
                                 player: user.clone(),
                                 rival: rival.clone(),
                                 valid,
@@ -156,7 +158,7 @@ impl GameActor {
                                     log::info!(
                                         "Game over ({game_id}). Winner: {winner}, Loser: {loser}"
                                     );
-                                    MessageResponse::GameOverWinner { winner, loser }
+                                    MessageOut::GameOverWinner { winner, loser }
                                 }
                                 GameOver::Draw => {
                                     let users = (user, rival);
@@ -165,24 +167,28 @@ impl GameActor {
                                         &users.0,
                                         &users.1
                                     );
-                                    MessageResponse::GameOverDraw { users }
+                                    MessageOut::GameOverDraw { users }
                                 }
                             };
                             self.repo.delete_game(game_id);
                             self.tx_res.send(gameover).await.unwrap();
                         }
                     }
-                    MessageRequest::UserLeft { user } => {
+                    MessageIn::UserLeft { user } => {
                         if let Some(rival) = self.repo.delete_user(&user) {
                             log::info!("{user} left the game. Notifying {rival} to leave.");
                             self.tx_res
-                                .send(MessageResponse::AbortGame { user: rival })
+                                .send(MessageOut::AbortGame { user: rival })
                                 .await
                                 .unwrap();
                         }
                     }
-                    MessageRequest::QueryGetState { respond_to } => {
-                        respond_to.send(StatePayload).unwrap();
+                    MessageIn::QueryGetState { respond_to } => {
+                        respond_to
+                            .send(StatePayload {
+                                _repo: self.repo.clone(),
+                            })
+                            .unwrap();
                     }
                 }
             }

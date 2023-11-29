@@ -1,213 +1,217 @@
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::sync::Arc;
-
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
-use tokio::sync::RwLock;
 
-use super::game::MessageRequest as GReq;
-use super::game::MessageResponse as GRes;
+use super::game as g;
+use super::matchmaking as mm;
 use super::matchmaking::MatchMakingActor;
-use super::matchmaking::MessageRequest as MMReq;
-use super::matchmaking::MessageResponse as MMRes;
+use super::service as s;
+use super::service::ServiceActor;
 use super::BUFFER_MAX;
-use crate::actor;
 use crate::actor::game::GameActor;
 
-#[derive(Debug)]
-pub enum MessageRequest {
-    SearchGame,
-    Move {
-        col: usize,
-    },
-    UserLeft,
-    QueryGetState {
-        respond_to: oneshot::Sender<StatePayload>,
-    },
+pub struct ActorController {
+    tx_mm_in: Sender<mm::MessageIn>,
+    rx_mm_out: Receiver<mm::MessageOut>,
+    mm_actor: MatchMakingActor,
+    tx_g_in: Sender<g::MessageIn>,
+    rx_g_out: Receiver<g::MessageOut>,
+    g_actor: GameActor,
+    tx_s_in: Sender<s::MessageIn>,
+    rx_s_out: Receiver<s::MessageOut>,
+    s_actor: Option<ServiceActor>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum MessageResponse {
-    NewGame {
-        game_id: u64,
-        rival: String,
-        first_turn: bool,
-    },
-    MoveValid {
-        valid: bool,
-    },
-    RivalMove {
-        col: usize,
-    },
-    GameOver {
-        won: Option<bool>,
-    },
-    RivalLeft,
-}
-
-#[derive(Debug)]
-pub struct StatePayload {
-    _mm_state: actor::matchmaking::StatePayload,
-    _g_state: actor::game::StatePayload,
-    _c_state: ControllerStatePayload,
-}
-
-#[derive(Debug)]
-pub struct ControllerStatePayload {
-    pub users: HashSet<String>,
-}
-
-pub struct MainControllerActor {
-    tx_mm_req: mpsc::Sender<MMReq>,
-    rx_mm_res: mpsc::Receiver<MMRes>,
-    tx_g_req: mpsc::Sender<GReq>,
-    rx_g_res: mpsc::Receiver<GRes>,
-    tx_req: mpsc::Sender<(String, MessageRequest)>,
-    rx_req: mpsc::Receiver<(String, MessageRequest)>,
-    map_tx_resp: Arc<RwLock<HashMap<String, mpsc::Sender<MessageResponse>>>>,
-}
-
-impl MainControllerActor {
+impl ActorController {
     pub fn new() -> Self {
-        let (tx_mm_res, rx_mm_res) = mpsc::channel(BUFFER_MAX);
-        let mmactor = MatchMakingActor::new(tx_mm_res, None);
-        let tx_mm_req = mmactor.get_sender();
-        mmactor.start();
+        let (tx_mm_out, rx_mm_out) = mpsc::channel(BUFFER_MAX);
+        let mm_actor = mm::MatchMakingActor::new(tx_mm_out, None);
+        let tx_mm_in = mm_actor.get_sender();
 
-        let (tx_g_res, rx_g_res) = mpsc::channel(BUFFER_MAX);
-        let gactor = GameActor::new(tx_g_res);
-        let tx_g_req = gactor.get_sender();
-        gactor.start();
+        let (tx_g_out, rx_g_out) = mpsc::channel(BUFFER_MAX);
+        let g_actor = GameActor::new(tx_g_out);
+        let tx_g_in = g_actor.get_sender();
 
-        let (tx, rx) = mpsc::channel(BUFFER_MAX);
+        let (tx_s_out, rx_s_out) = mpsc::channel(BUFFER_MAX);
+        let s_actor = ServiceActor::new(tx_s_out);
+        let tx_s_in = s_actor.get_sender();
 
         Self {
-            tx_mm_req,
-            rx_mm_res,
-            tx_g_req,
-            rx_g_res,
-            tx_req: tx,
-            rx_req: rx,
-            map_tx_resp: Arc::new(RwLock::new(HashMap::new())),
+            tx_mm_in,
+            rx_mm_out,
+            mm_actor,
+            tx_g_in,
+            rx_g_out,
+            g_actor,
+            tx_s_in,
+            rx_s_out,
+            s_actor: Some(s_actor),
         }
     }
 
-    pub fn get_sender(&self) -> mpsc::Sender<(String, MessageRequest)> {
-        self.tx_req.clone()
+    #[cfg(test)]
+    pub fn new_no_service(
+        tx_s_in: Sender<s::MessageIn>,
+        rx_s_out: Receiver<s::MessageOut>,
+    ) -> Self {
+        let (tx_mm_out, rx_mm_out) = mpsc::channel(BUFFER_MAX);
+        let mm_actor = mm::MatchMakingActor::new(tx_mm_out, None);
+        let tx_mm_in = mm_actor.get_sender();
+
+        let (tx_g_out, rx_g_out) = mpsc::channel(BUFFER_MAX);
+        let g_actor = GameActor::new(tx_g_out);
+        let tx_g_in = g_actor.get_sender();
+
+        Self {
+            tx_mm_in,
+            rx_mm_out,
+            mm_actor,
+            tx_g_in,
+            rx_g_out,
+            g_actor,
+            tx_s_in,
+            rx_s_out,
+            s_actor: None,
+        }
     }
 
-    pub fn get_tx_map(&self) -> Arc<RwLock<HashMap<String, mpsc::Sender<MessageResponse>>>> {
-        self.map_tx_resp.clone()
-    }
+    pub async fn run_all(self) {
+        log::debug!("Controller starting all actors...");
+        let ActorController {
+            tx_mm_in,
+            mut rx_mm_out,
+            mm_actor,
+            tx_g_in,
+            mut rx_g_out,
+            g_actor,
+            tx_s_in,
+            mut rx_s_out,
+            s_actor,
+        } = self;
 
-    pub fn start(mut self) {
+        if let Some(s_actor) = s_actor {
+            s_actor.start();
+        } else {
+            log::warn!("service actor not started. Assuming this is a test env");
+        }
+
+        mm_actor.start();
+        g_actor.start();
+
         log::debug!("Controller actor started.");
-        tokio::spawn(async move {
+        let _ = tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    Some((user, msg)) = self.rx_req.recv() => {
-                        log::debug!("RECV {msg:?} from {user}");
-                        self.handle_controller_req(user, msg).await;
+                    Some(msg) = rx_s_out.recv() => {
+                        log::debug!("RECV {msg:?} from S actor");
+                        Self::handle_msg_s_out(&tx_mm_in, &tx_g_in, msg).await;
                     }
-                    Some(msg) = self.rx_mm_res.recv() => {
+                    Some(msg) = rx_mm_out.recv() => {
                         log::debug!("RECV {msg:?} from MM actor");
-                        self.handle_mmres(msg).await;
+                        Self::handle_msg_mm_out(&tx_g_in, msg).await;
                     },
-                    Some(msg) = self.rx_g_res.recv() => {
+                    Some(msg) = rx_g_out.recv() => {
                         log::debug!("RECV {msg:?} from G actor");
-                        self.handle_gres(msg).await;
+                        Self::handle_msg_g_out(&tx_s_in, &tx_mm_in, msg).await;
                     }
                 }
             }
-        });
+        })
+        .await;
     }
 
-    async fn handle_controller_req(&self, user: String, msg: MessageRequest) {
+    async fn handle_msg_s_out(
+        tx_mm_in: &Sender<mm::MessageIn>,
+        tx_g_in: &Sender<g::MessageIn>,
+        msg: s::MessageOut,
+    ) {
+        let s::MessageOut { user, inner: msg } = msg;
         match msg {
-            MessageRequest::SearchGame => {
-                self.tx_mm_req.send(MMReq::Search { user }).await.unwrap();
+            s::MessageOutInner::SearchGame => {
+                tx_mm_in.send(mm::MessageIn::Search { user }).await.unwrap();
             }
-            MessageRequest::Move { col } => {
-                self.tx_g_req.send(GReq::Move { user, col }).await.unwrap();
-            }
-            MessageRequest::UserLeft => {
-                let mut wmap = self.map_tx_resp.write().await;
-                wmap.remove(&user).unwrap();
-                drop(wmap);
-                self.tx_g_req
-                    .send(GReq::UserLeft { user: user.clone() })
-                    .await
-                    .unwrap();
-                self.tx_mm_req
-                    .send(MMReq::CancelSearch { user })
+            s::MessageOutInner::Move { col } => {
+                tx_g_in
+                    .send(g::MessageIn::Move { user, col })
                     .await
                     .unwrap();
             }
-            MessageRequest::QueryGetState { respond_to } => {
+            s::MessageOutInner::UserLeft => {
+                tx_g_in
+                    .send(g::MessageIn::UserLeft { user: user.clone() })
+                    .await
+                    .unwrap();
+                tx_mm_in
+                    .send(mm::MessageIn::CancelSearch { user })
+                    .await
+                    .unwrap();
+            }
+            s::MessageOutInner::QueryGetState { respond_to } => {
                 let (tx_mm, rx_mm) = oneshot::channel();
                 let (tx_g, rx_g) = oneshot::channel();
-                self.tx_mm_req
-                    .send(MMReq::QueryGetState { respond_to: tx_mm })
+                tx_mm_in
+                    .send(mm::MessageIn::QueryGetState { respond_to: tx_mm })
                     .await
                     .unwrap();
-                self.tx_g_req
-                    .send(GReq::QueryGetState { respond_to: tx_g })
+                tx_g_in
+                    .send(g::MessageIn::QueryGetState { respond_to: tx_g })
                     .await
                     .unwrap();
-                let rmap = self.map_tx_resp.read().await;
-                let users = rmap.keys().cloned().collect::<HashSet<String>>();
-                drop(rmap);
                 let mm_state = rx_mm.await.unwrap();
                 let g_state = rx_g.await.unwrap();
-                let state = StatePayload {
-                    _mm_state: mm_state,
-                    _g_state: g_state,
-                    _c_state: ControllerStatePayload { users },
-                };
-                respond_to.send(state).unwrap();
+                respond_to.send((mm_state, g_state)).unwrap();
             }
         }
     }
 
-    async fn handle_mmres(&self, msg: MMRes) {
+    async fn handle_msg_mm_out(tx_g_in: &Sender<g::MessageIn>, msg: mm::MessageOut) {
         match msg {
-            MMRes::UsersFound { users } => {
-                self.tx_g_req.send(GReq::NewGame { users }).await.unwrap();
+            mm::MessageOut::UsersFound { users } => {
+                tx_g_in.send(g::MessageIn::NewGame { users }).await.unwrap();
             }
-            MMRes::LongWait { user: _ } => {
+            mm::MessageOut::LongWait { user: _ } => {
                 log::warn!("Ignoring msg.");
             }
         }
     }
 
-    async fn handle_gres(&self, msg: GRes) {
+    async fn handle_msg_g_out(
+        tx_s_in: &Sender<s::MessageIn>,
+        tx_mm_in: &Sender<mm::MessageIn>,
+        msg: g::MessageOut,
+    ) {
         match msg {
-            GRes::NewGame {
+            g::MessageOut::NewGame {
                 game_id,
                 users,
                 first_turn,
             } => {
                 let (user0, user1) = users;
-                let map_tx_resp = self.map_tx_resp.read().await;
-                let tx0 = map_tx_resp.get(&user0).unwrap();
-                let tx1 = map_tx_resp.get(&user1).unwrap();
-                tx0.send(MessageResponse::NewGame {
-                    game_id,
-                    rival: user1.clone(),
-                    first_turn: first_turn == user0,
-                })
-                .await
-                .unwrap();
-                tx1.send(MessageResponse::NewGame {
-                    game_id,
-                    rival: user0.clone(),
-                    first_turn: first_turn == user1,
-                })
-                .await
-                .unwrap();
+                tx_s_in
+                    .send(s::MessageIn {
+                        user: user0.clone(),
+                        inner: s::MessageInInner::NewGame {
+                            game_id,
+                            rival: user1.clone(),
+                            first_turn: first_turn == user0,
+                        },
+                    })
+                    .await
+                    .unwrap();
+                tx_s_in
+                    .send(s::MessageIn {
+                        user: user1.clone(),
+                        inner: s::MessageInInner::NewGame {
+                            game_id,
+                            rival: user0.clone(),
+                            first_turn: first_turn == user1,
+                        },
+                    })
+                    .await
+                    .unwrap();
             }
-            GRes::UserAlreadyInGame {
+            g::MessageOut::UserAlreadyInGame {
                 reject_users,
                 rematchmake_users,
             } => {
@@ -215,74 +219,81 @@ impl MainControllerActor {
                     log::warn!("User {user} tried to matchmake but is already in a game.");
                 }
                 for user in rematchmake_users {
-                    self.tx_mm_req.send(MMReq::Search { user }).await.unwrap();
+                    tx_mm_in.send(mm::MessageIn::Search { user }).await.unwrap();
                 }
             }
-            GRes::UserNotInGame { user } => {
+            g::MessageOut::UserNotInGame { user } => {
                 log::warn!("User {user} tried to make a MOVE event, but he is not in a game.");
             }
-            GRes::MoveValid {
+            g::MessageOut::MoveValid {
                 player,
                 rival,
                 valid,
                 col,
             } => {
-                let tx_map = self.map_tx_resp.read().await;
                 if valid {
-                    tx_map
-                        .get(&player)
-                        .unwrap()
-                        .send(MessageResponse::MoveValid { valid: true })
+                    tx_s_in
+                        .send(s::MessageIn {
+                            user: player,
+                            inner: s::MessageInInner::MoveValid { valid: true },
+                        })
                         .await
                         .unwrap();
-                    tx_map
-                        .get(&rival)
-                        .unwrap()
-                        .send(MessageResponse::RivalMove { col })
+                    tx_s_in
+                        .send(s::MessageIn {
+                            user: rival,
+                            inner: s::MessageInInner::RivalMove { col },
+                        })
                         .await
                         .unwrap();
                 } else {
-                    tx_map
-                        .get(&player)
-                        .unwrap()
-                        .send(MessageResponse::MoveValid { valid: false })
+                    tx_s_in
+                        .send(s::MessageIn {
+                            user: player,
+                            inner: s::MessageInInner::MoveValid { valid: false },
+                        })
                         .await
                         .unwrap();
                 }
             }
-            GRes::GameOverWinner { winner, loser } => {
-                let tx_map = self.map_tx_resp.read().await;
-                let winner_tx = tx_map.get(&winner).unwrap();
-                let loser_tx = tx_map.get(&loser).unwrap();
-                winner_tx
-                    .send(MessageResponse::GameOver { won: Some(true) })
+            g::MessageOut::GameOverWinner { winner, loser } => {
+                tx_s_in
+                    .send(s::MessageIn {
+                        user: winner,
+                        inner: s::MessageInInner::GameOver { won: Some(true) },
+                    })
                     .await
                     .unwrap();
-                loser_tx
-                    .send(MessageResponse::GameOver { won: Some(false) })
-                    .await
-                    .unwrap();
-            }
-            GRes::GameOverDraw { users } => {
-                let tx_map = self.map_tx_resp.read().await;
-                let user0_tx = tx_map.get(&users.0).unwrap();
-                let user1_tx = tx_map.get(&users.1).unwrap();
-                user0_tx
-                    .send(MessageResponse::GameOver { won: None })
-                    .await
-                    .unwrap();
-                user1_tx
-                    .send(MessageResponse::GameOver { won: None })
+                tx_s_in
+                    .send(s::MessageIn {
+                        user: loser,
+                        inner: s::MessageInInner::GameOver { won: Some(false) },
+                    })
                     .await
                     .unwrap();
             }
-            GRes::AbortGame { user } => {
-                self.map_tx_resp
-                    .read()
+            g::MessageOut::GameOverDraw { users } => {
+                tx_s_in
+                    .send(s::MessageIn {
+                        user: users.0,
+                        inner: s::MessageInInner::GameOver { won: None },
+                    })
                     .await
-                    .get(&user)
-                    .unwrap()
-                    .send(MessageResponse::RivalLeft)
+                    .unwrap();
+                tx_s_in
+                    .send(s::MessageIn {
+                        user: users.1,
+                        inner: s::MessageInInner::GameOver { won: None },
+                    })
+                    .await
+                    .unwrap();
+            }
+            g::MessageOut::AbortGame { user } => {
+                tx_s_in
+                    .send(s::MessageIn {
+                        user,
+                        inner: s::MessageInInner::RivalLeft,
+                    })
                     .await
                     .unwrap();
             }
