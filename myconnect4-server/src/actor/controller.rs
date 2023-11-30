@@ -143,11 +143,11 @@ impl ActorController {
                 tokio::select! {
                     Some(msg) = rx_s_out.recv() => {
                         log::debug!("RECV {msg:?} from S actor");
-                        Self::handle_msg_s_out(&tx_mm_in, &tx_g_in, msg).await;
+                        Self::handle_msg_s_out(&tx_mm_in, &tx_g_in, &tx_bm_in, msg).await;
                     }
                     Some(msg) = rx_bms_out.recv() => {
                         log::debug!("RECV {msg:?} from BM actor");
-                        Self::handle_msg_s_out(&tx_mm_in, &tx_g_in, msg).await;
+                        Self::handle_msg_s_out(&tx_mm_in, &tx_g_in, &tx_bm_in, msg).await;
                     }
                     Some(msg) = rx_mm_out.recv() => {
                         log::debug!("RECV {msg:?} from MM actor");
@@ -170,6 +170,7 @@ impl ActorController {
     async fn handle_msg_s_out(
         tx_mm_in: &Sender<mm::MessageIn>,
         tx_g_in: &Sender<g::MessageIn>,
+        tx_bm_in: &Sender<bm::MessageIn>,
         msg: s::MessageOut,
     ) {
         let s::MessageOut { user, inner: msg } = msg;
@@ -208,6 +209,10 @@ impl ActorController {
                 let g_state = rx_g.await.unwrap();
                 respond_to.send((mm_state, g_state)).unwrap();
             }
+            s::MessageOutInner::SpawnSeveralBots { number } => tx_bm_in
+                .send(bm::MessageIn::SpawnSeveral { number })
+                .await
+                .unwrap(),
         }
     }
 

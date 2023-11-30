@@ -5,7 +5,9 @@ use either::Either;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::oneshot;
 use tokio::sync::RwLock;
+use tokio::task::JoinSet;
 
 use super::bot;
 use super::service;
@@ -15,6 +17,7 @@ use crate::actor::bot::BotActor;
 #[derive(Debug)]
 pub enum MessageIn {
     QueueOne,
+    SpawnSeveral { number: usize },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -24,6 +27,7 @@ pub enum MessageOut {
 
 pub struct BotManagerActor {
     tx_in: Sender<MessageIn>,
+    #[allow(dead_code)]
     tx_out: Sender<MessageOut>,
     rx_in: Receiver<MessageIn>,
     tx_s_in: Sender<service::MessageIn>,
@@ -82,7 +86,7 @@ impl BotManagerActor {
     pub fn start(self) {
         let BotManagerActor {
             tx_in: _,
-            tx_out,
+            tx_out: _,
             mut rx_in,
             tx_s_in: _,
             tx_s_out,
@@ -97,19 +101,77 @@ impl BotManagerActor {
         let map_bots_1 = map_bots.clone();
         tokio::spawn(async move {
             let map_bots = map_bots_1;
-            while let Some(msg) = rx_in.recv().await {
+            'msg: while let Some(msg) = rx_in.recv().await {
                 log::debug!("RECV {msg:?}");
                 match msg {
                     MessageIn::QueueOne => {
                         // TODO, probe for bot idle before spawning
+                        let rmap_bots = map_bots.read().await;
+
+                        let mut tasks = JoinSet::new();
+                        rmap_bots
+                            .values()
+                            .map(|(sender, _)| {
+                                let (tx, rx) = oneshot::channel();
+                                let sender = sender.clone();
+                                async move {
+                                    sender
+                                        .send(bot::MessageIn::QueryIdle { respond_to: tx })
+                                        .await
+                                        .unwrap();
+                                    let is_idle = rx.await.unwrap();
+                                    (is_idle, sender)
+                                }
+                            })
+                            .for_each(|task| {
+                                tasks.spawn(task);
+                            });
+
+                        while let Some(Ok((is_idle, sender))) = tasks.join_next().await {
+                            if is_idle {
+                                sender.send(bot::MessageIn::SearchForGame).await.unwrap();
+                                continue 'msg;
+                            }
+                        }
+
+                        drop(rmap_bots);
+
                         let bot_id = Self::spawn_bot(&map_bots, &tx_b_out, &tx_s_out).await;
-                        tx_out.send(MessageOut::Nothing).await.unwrap();
+                        //tx_out.send(MessageOut::Nothing).await.unwrap();
                         Self::send_to_bot(
                             &map_bots,
                             &bot_id,
                             Either::Left(bot::MessageIn::SearchForGame),
                         )
                         .await;
+                    }
+                    MessageIn::SpawnSeveral { number } => {
+                        let map_bots = map_bots.clone();
+                        let mut tasks = JoinSet::new();
+                        (0..number)
+                            .map(|_| (map_bots.clone(), tx_b_out.clone(), tx_s_out.clone()))
+                            .map(|(map_bots, tx_b_out, tx_s_out)| async move {
+                                let bot_id = Self::spawn_bot(&map_bots, &tx_b_out, &tx_s_out).await;
+                                Self::send_to_bot(
+                                    &map_bots,
+                                    &bot_id,
+                                    Either::Left(bot::MessageIn::PermaPlay(true)),
+                                )
+                                .await;
+                                Self::send_to_bot(
+                                    &map_bots,
+                                    &bot_id,
+                                    Either::Left(bot::MessageIn::SearchForGame),
+                                )
+                                .await;
+                            })
+                            .for_each(|task| {
+                                tasks.spawn(task);
+                            });
+                        for _ in 0..number {}
+                        log::debug!("Spawning bots...");
+                        while let Some(_) = tasks.join_next().await {}
+                        log::debug!("Done spawning bots");
                     }
                 }
             }

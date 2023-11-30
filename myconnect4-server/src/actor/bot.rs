@@ -1,10 +1,13 @@
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
+use tokio::time::sleep;
 
 use super::service;
 use super::BUFFER_MAX;
@@ -14,9 +17,8 @@ use crate::game::COLS;
 #[derive(Debug)]
 pub enum MessageIn {
     SearchForGame,
-    QueryState {
-        respond_to: oneshot::Sender<BotState>,
-    },
+    PermaPlay(bool),
+    QueryIdle { respond_to: oneshot::Sender<bool> },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -27,15 +29,17 @@ pub enum MessageOut {
 pub struct BotActor {
     bot_id: String,
     tx_in: Sender<MessageIn>,
+    #[allow(dead_code)]
     tx_out: Sender<MessageOut>,
     rx_in: Receiver<MessageIn>,
     tx_s_in: Sender<service::MessageInInner>,
     tx_s_out: Sender<service::MessageOut>,
     rx_s_in: Receiver<service::MessageInInner>,
     state: Arc<Mutex<BotState>>,
+    perma_play: Arc<AtomicBool>,
 }
 
-enum BotState {
+pub enum BotState {
     Idle,
     Searching,
     Playing { game: Connect4Game },
@@ -66,6 +70,7 @@ impl BotActor {
             tx_s_out,
             rx_s_in,
             state: Arc::new(Mutex::new(BotState::Idle)),
+            perma_play: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -89,6 +94,7 @@ impl BotActor {
         let bot_id_2 = self.bot_id.clone();
 
         let tx_s_out = self.tx_s_out.clone();
+        let perma_play = self.perma_play.clone();
 
         tokio::spawn(async move {
             let botstate = botstate_1;
@@ -111,7 +117,19 @@ impl BotActor {
                             .await
                             .unwrap();
                     }
-                    MessageIn::QueryState { respond_to: _ } => todo!(),
+                    MessageIn::QueryIdle { respond_to } => {
+                        let botstate = botstate.lock().await;
+                        let idle = if let BotState::Idle = *botstate {
+                            true
+                        } else {
+                            false
+                        };
+                        respond_to.send(idle).unwrap();
+                    }
+                    MessageIn::PermaPlay(mode) => {
+                        self.perma_play
+                            .store(mode, std::sync::atomic::Ordering::SeqCst);
+                    }
                 }
             }
         });
@@ -167,6 +185,9 @@ impl BotActor {
                         log::debug!("Game over for {bot_id}: {result}");
                         let mut botstate = botstate.lock().await;
                         *botstate = BotState::Idle;
+                        if perma_play.load(std::sync::atomic::Ordering::SeqCst) {
+                            self.tx_in.send(MessageIn::SearchForGame).await.unwrap();
+                        }
                     }
                     service::MessageInInner::RivalLeft => {
                         let mut botstate = botstate.lock().await;
@@ -177,6 +198,9 @@ impl BotActor {
                             continue;
                         };
                         *botstate = BotState::Idle;
+                        if perma_play.load(std::sync::atomic::Ordering::SeqCst) {
+                            self.tx_in.send(MessageIn::SearchForGame).await.unwrap();
+                        }
                     }
                 }
             }
@@ -184,9 +208,18 @@ impl BotActor {
     }
 
     async fn play(bot_id: &str, game: &mut Connect4Game, tx_s_out: &Sender<service::MessageOut>) {
-        let col = rand::random::<u8>() % COLS as u8;
-        if !game.play_no_user(col) {
-            log::error!("Bot made an invalid move.");
+        sleep(Duration::from_millis(300)).await;
+        let mut valid = false;
+        let mut col = 0;
+        for _ in 0..100 {
+            col = rand::random::<u8>() % COLS as u8;
+            if game.play_no_user(col) {
+                valid = true;
+                break;
+            }
+        }
+        if !valid {
+            log::debug!("Bot unable to make another move. Waiting on game over event.");
             return;
         }
         tx_s_out

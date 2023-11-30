@@ -29,6 +29,7 @@ use crate::myconnect4::Move;
 use crate::myconnect4::MoveValid;
 use crate::myconnect4::NewGame;
 use crate::myconnect4::ServerState;
+use crate::myconnect4::SpawnSeveral;
 use crate::myconnect4::Winner;
 
 const CLIENT_BUFFER_MAX: usize = 100;
@@ -73,6 +74,9 @@ pub enum MessageOutInner {
     UserLeft,
     QueryGetState {
         respond_to: oneshot::Sender<(matchmaking::StatePayload, game::StatePayload)>,
+    },
+    SpawnSeveralBots {
+        number: usize,
     },
 }
 
@@ -323,5 +327,20 @@ impl MyConnect4Service for ServiceActor {
         Ok(Response::new(ServerState {
             response: format!("{users:?} - {state:?}"),
         }))
+    }
+
+    async fn spawn_several_bots(
+        &self,
+        req: Request<SpawnSeveral>,
+    ) -> Result<Response<Empty>, Status> {
+        let number = req.into_inner().number as usize;
+        self.tx_out
+            .send(MessageOut {
+                user: "*".to_string(),
+                inner: MessageOutInner::SpawnSeveralBots { number },
+            })
+            .await
+            .unwrap();
+        Ok(Response::new(Empty {}))
     }
 }

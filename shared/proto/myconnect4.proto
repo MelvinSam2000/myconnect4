@@ -45,7 +45,12 @@ message ServerState {
   string response = 1;
 }
 
+message SpawnSeveral {
+  uint64 number = 1;
+}
+
 service MyConnect4Service {
   rpc StreamEvents (stream GameEvent) returns (stream GameEvent);
   rpc QueryState (Empty) returns (ServerState);
+  rpc SpawnSeveralBots (SpawnSeveral) returns (Empty);
 }

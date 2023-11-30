@@ -13,6 +13,7 @@ pub struct Connect4Game {
     pub user_first: String,
     turn: bool,
     pub game_id: u64,
+    history: Vec<u8>,
 }
 
 impl Connect4Game {
@@ -28,6 +29,7 @@ impl Connect4Game {
             user_first: user_first.clone(),
             turn: user_first == users.0,
             game_id,
+            history: vec![],
         }
     }
 
@@ -43,6 +45,7 @@ impl Connect4Game {
             user_first: first,
             turn: true,
             game_id,
+            history: vec![],
         }
     }
 
@@ -66,7 +69,7 @@ impl Connect4Game {
     pub fn play(&mut self, user: &str, col: u8) -> bool {
         let col = col as usize;
         if col >= COLS {
-            log::warn!("Invalid column for move: {col}");
+            log::debug!("User {user} made invalid column for move: {col}");
             return false;
         }
         let player = self.users.0 == user;
@@ -81,10 +84,11 @@ impl Connect4Game {
             row += 1;
         }
 
-        if row > ROWS {
+        if row >= ROWS {
             return false;
         }
         self.board[row][col] = Some(player);
+        self.history.push(col as u8);
 
         self.turn = !self.turn;
 

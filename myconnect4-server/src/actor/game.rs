@@ -63,7 +63,10 @@ pub struct GameActor {
 
 #[derive(Debug)]
 pub struct StatePayload {
-    _repo: Connect4Repo,
+    _users_playing: Vec<String>,
+    _num_users_playing: usize,
+    _games: Vec<u64>,
+    _num_games: usize,
 }
 
 impl GameActor {
@@ -185,9 +188,16 @@ impl GameActor {
                         }
                     }
                     MessageIn::QueryGetState { respond_to } => {
+                        let users = self.repo.get_users();
+                        let n_users = users.len();
+                        let games = self.repo.get_game_ids();
+                        let n_games = games.len();
                         respond_to
                             .send(StatePayload {
-                                _repo: self.repo.clone(),
+                                _users_playing: users,
+                                _num_users_playing: n_users,
+                                _games: games,
+                                _num_games: n_games,
                             })
                             .unwrap();
                     }

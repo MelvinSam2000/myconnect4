@@ -35,6 +35,14 @@ impl Connect4Repo {
         self.map_user_to_game_id.get(user).cloned()
     }
 
+    pub fn get_game_ids(&self) -> Vec<u64> {
+        self.map_game_id_to_game.keys().cloned().collect()
+    }
+
+    pub fn get_users(&self) -> Vec<String> {
+        self.map_user_to_game_id.keys().cloned().collect()
+    }
+
     pub fn delete_game(&mut self, game_id: u64) {
         self.map_game_id_to_game.remove(&game_id);
         if let Some(users) = self.map_game_id_to_users.remove(&game_id) {
