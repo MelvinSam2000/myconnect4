@@ -156,6 +156,10 @@ impl ActorController {
                     Some(msg) = rx_g_out.recv() => {
                         log::debug!("RECV {msg:?} from G actor");
                         Self::handle_msg_g_out(&tx_s_in, &tx_bms_in, &tx_mm_in, msg).await;
+                    },
+                    Some(msg) = rx_bm_out.recv() => {
+                        log::debug!("RECV {msg:?} from BM actor");
+                        Self::handle_msg_bm_out(msg).await;
                     }
                 }
             }
@@ -364,6 +368,12 @@ impl ActorController {
                 )
                 .await;
             }
+        }
+    }
+
+    async fn handle_msg_bm_out(msg: bm::MessageOut) {
+        match msg {
+            bm::MessageOut::Nothing => log::debug!("Ignoring."),
         }
     }
 

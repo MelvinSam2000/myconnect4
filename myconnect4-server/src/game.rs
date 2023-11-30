@@ -12,20 +12,37 @@ pub struct Connect4Game {
     pub users: (String, String),
     pub user_first: String,
     turn: bool,
+    pub game_id: u64,
 }
 
 impl Connect4Game {
-    pub fn new(users: (String, String)) -> Self {
+    pub fn new(game_id: u64, users: (String, String)) -> Self {
         let user_first = if rand::random::<bool>() {
             users.0.clone()
         } else {
             users.1.clone()
         };
         Self {
-            board: [[None; 7]; 6],
+            board: [[None; COLS]; ROWS],
             users: users.clone(),
             user_first: user_first.clone(),
             turn: user_first == users.0,
+            game_id,
+        }
+    }
+
+    pub fn new_custom(game_id: u64, player: String, rival: String, is_first: bool) -> Self {
+        let (first, second) = if is_first {
+            (player, rival)
+        } else {
+            (rival, player)
+        };
+        Self {
+            board: [[None; COLS]; ROWS],
+            users: (first.clone(), second),
+            user_first: first,
+            turn: true,
+            game_id,
         }
     }
 
@@ -35,6 +52,15 @@ impl Connect4Game {
         } else {
             self.users.0.clone()
         }
+    }
+
+    pub fn play_no_user(&mut self, col: u8) -> bool {
+        let user = if self.turn {
+            self.users.0.clone()
+        } else {
+            self.users.1.clone()
+        };
+        self.play(&user, col)
     }
 
     pub fn play(&mut self, user: &str, col: u8) -> bool {

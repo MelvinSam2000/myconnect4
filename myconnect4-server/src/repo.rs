@@ -20,7 +20,7 @@ impl Connect4Repo {
     pub fn create_new_game(&mut self, users: (String, String)) -> u64 {
         let game_id = rand::random::<u64>();
         self.map_game_id_to_game
-            .insert(game_id, Connect4Game::new(users.clone()));
+            .insert(game_id, Connect4Game::new(game_id, users.clone()));
         self.map_game_id_to_users.insert(game_id, users.clone());
         self.map_user_to_game_id.insert(users.0.clone(), game_id);
         self.map_user_to_game_id.insert(users.1.clone(), game_id);

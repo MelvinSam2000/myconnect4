@@ -65,7 +65,7 @@ fn test_draw() {
         TFTFTFT",
     ];
 
-    let mut game = Connect4Game::new(("Alice".to_string(), "Bob".to_string()));
+    let mut game = Connect4Game::new(0, ("Alice".to_string(), "Bob".to_string()));
     for board in positive_test_cases {
         game.board_from_str(board);
         assert!(game.check_draw(), "Positive case failed");
@@ -202,7 +202,7 @@ fn test_victory() {
         )
     ];
 
-    let mut game = Connect4Game::new(("Alice".to_string(), "Bob".to_string()));
+    let mut game = Connect4Game::new(0, ("Alice".to_string(), "Bob".to_string()));
     for (test_title, board, winner) in test_cases {
         game.board_from_str(board);
         assert_eq!(

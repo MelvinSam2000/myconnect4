@@ -86,6 +86,7 @@ impl GameActor {
         tokio::spawn(async move {
             while let Some(req) = self.rx.recv().await {
                 log::debug!("RECV {req:?}");
+                log::trace!("start");
                 match req {
                     MessageIn::NewGame { users } => {
                         let game0 = self.repo.get_game_id(&users.0);
@@ -191,6 +192,7 @@ impl GameActor {
                             .unwrap();
                     }
                 }
+                log::trace!("end");
             }
         });
     }

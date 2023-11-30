@@ -76,6 +76,7 @@ impl MatchMakingActor {
         tokio::spawn(async move {
             while let Some(req) = self.rx.recv().await {
                 log::debug!("RECV {req:?}");
+                log::trace!("start");
                 match req {
                     MessageIn::Search { user } => {
                         let rqueue = self.queue.read().await;
@@ -121,6 +122,7 @@ impl MatchMakingActor {
                         }
                     }
                 }
+                log::trace!("end");
             }
         });
         // polling/delay check task
