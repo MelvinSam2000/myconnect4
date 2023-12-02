@@ -16,6 +16,7 @@ use crate::actor::bot::BotActor;
 
 #[derive(Debug)]
 pub enum MessageIn {
+    HeartBeat { respond_to: oneshot::Sender<()> },
     QueueOne,
     SpawnSeveral { number: usize },
 }
@@ -104,6 +105,9 @@ impl BotManagerActor {
             'msg: while let Some(msg) = rx_in.recv().await {
                 log::debug!("RECV {msg:?}");
                 match msg {
+                    MessageIn::HeartBeat { respond_to } => {
+                        let _ = respond_to.send(());
+                    }
                     MessageIn::QueueOne => {
                         // TODO, probe for bot idle before spawning
                         let rmap_bots = map_bots.read().await;

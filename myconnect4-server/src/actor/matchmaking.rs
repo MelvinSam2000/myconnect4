@@ -13,6 +13,9 @@ const DEFAULT_WAIT_LIMIT: Duration = Duration::from_millis(10000);
 
 #[derive(Debug)]
 pub enum MessageIn {
+    HeartBeat {
+        respond_to: oneshot::Sender<()>,
+    },
     CancelSearch {
         user: String,
     },
@@ -78,6 +81,9 @@ impl MatchMakingActor {
                 log::debug!("RECV {req:?}");
                 log::trace!("start");
                 match req {
+                    MessageIn::HeartBeat { respond_to } => {
+                        let _ = respond_to.send(());
+                    }
                     MessageIn::Search { user } => {
                         let rqueue = self.queue.read().await;
                         if rqueue.iter().any(|record| user == record.user) {

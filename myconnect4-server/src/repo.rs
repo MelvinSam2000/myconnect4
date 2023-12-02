@@ -3,10 +3,8 @@ use std::collections::HashMap;
 use crate::game::Connect4Game;
 
 /*
-
 RELATIONAL DIAGRAM:
 game 0..1 --- 2 user
-
 */
 
 #[derive(Default, Debug, Clone)]
@@ -14,6 +12,7 @@ pub struct Connect4Repo {
     map_user_to_game_id: HashMap<String, u64>,
     map_game_id_to_users: HashMap<u64, (String, String)>,
     map_game_id_to_game: HashMap<u64, Connect4Game>,
+    pub total_games_played: u128,
 }
 
 impl Connect4Repo {
@@ -48,6 +47,14 @@ impl Connect4Repo {
         if let Some(users) = self.map_game_id_to_users.remove(&game_id) {
             self.map_user_to_game_id.remove(&users.0);
             self.map_user_to_game_id.remove(&users.1);
+            self.total_games_played += 1;
+            if self.total_games_played == u128::MAX {
+                self.total_games_played = 0;
+                log::info!(
+                    "Total games played reached reached {}. Resetting counter.",
+                    u128::MAX
+                );
+            }
         }
     }
 

@@ -7,6 +7,9 @@ use crate::repo::Connect4Repo;
 
 #[derive(Debug)]
 pub enum MessageIn {
+    HeartBeat {
+        respond_to: oneshot::Sender<()>,
+    },
     NewGame {
         users: (String, String),
     },
@@ -64,9 +67,10 @@ pub struct GameActor {
 #[derive(Debug)]
 pub struct StatePayload {
     _users_playing: Vec<String>,
-    _num_users_playing: usize,
     _games: Vec<u64>,
+    _num_users_playing: usize,
     _num_games: usize,
+    _total_games_played: u128,
 }
 
 impl GameActor {
@@ -91,6 +95,9 @@ impl GameActor {
                 log::debug!("RECV {req:?}");
                 log::trace!("start");
                 match req {
+                    MessageIn::HeartBeat { respond_to } => {
+                        let _ = respond_to.send(());
+                    }
                     MessageIn::NewGame { users } => {
                         let game0 = self.repo.get_game_id(&users.0);
                         let game1 = self.repo.get_game_id(&users.1);
@@ -188,16 +195,26 @@ impl GameActor {
                         }
                     }
                     MessageIn::QueryGetState { respond_to } => {
-                        let users = self.repo.get_users();
+                        let mut users = self.repo.get_users();
                         let n_users = users.len();
-                        let games = self.repo.get_game_ids();
+                        let mut games = self.repo.get_game_ids();
                         let n_games = games.len();
+                        let total_games_played = self.repo.total_games_played;
+
+                        if n_users > 100 {
+                            users = vec![];
+                        }
+                        if n_games > 100 {
+                            games = vec![];
+                        }
+
                         respond_to
                             .send(StatePayload {
                                 _users_playing: users,
-                                _num_users_playing: n_users,
                                 _games: games,
                                 _num_games: n_games,
+                                _num_users_playing: n_users,
+                                _total_games_played: total_games_played,
                             })
                             .unwrap();
                     }

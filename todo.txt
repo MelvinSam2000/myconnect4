@@ -1,22 +1,26 @@
 MAJOR FEATURE (SERVER)
 [x] Bot actor
 [ ] Handle send errors
-[ ] Keep game records
+[ ] Keep game history
+[ ] Fix/diagnose deadlock condition
 [x] Disconnection
+[ ] Handle idle during game
+[ ] Heartbeat signals for BM and Service
 
 
 MAJOR FEATURE (CLIENT)
 [ ] Android app
+[x] Draw each turn on cli
 
 MINOR FEATURE
 [ ] TLS
-[ ]
+[ ] Minimax
+[ ] Zip logs
 [x] Server admin state query
 [ ] Secure server state query endpoint
-[ ] Replace server state with relational in-memory db ?
+[ ] Replace game data with relational in-memory db ?
 [ ] Tracing
-[x] Binary Optimization for server
-[x] Look into Actor design pattern ?
+[ ] Priority match making for users and not bots ?
 
 MAJOR BUG
 

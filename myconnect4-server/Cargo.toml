@@ -6,7 +6,7 @@ edition = "2021"
 [profile.release]
 opt-level = 3
 #strip = "symbols"
-#panic = "abort"
+panic = "abort"
 lto = true
 codegen-units = 1
 

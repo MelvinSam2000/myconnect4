@@ -5,14 +5,20 @@ use clap::Parser;
 use myconnect4::Move;
 use regex::Regex;
 use tokio::io::AsyncReadExt;
+use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tonic::Request;
 
+use crate::game::Connect4Game;
 use crate::myconnect4::game_event::Event;
 use crate::myconnect4::my_connect4_service_client::MyConnect4ServiceClient;
 use crate::myconnect4::Empty;
 use crate::myconnect4::GameEvent;
+use crate::myconnect4::GameOver;
+use crate::myconnect4::MoveValid;
+use crate::myconnect4::NewGame;
 
+pub mod game;
 pub mod myconnect4 {
     tonic::include_proto!("myconnect4");
 }
@@ -66,7 +72,8 @@ async fn main() {
         return;
     }
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+    let (tx, mut rx) = mpsc::channel(100);
+    let (tx_col, mut rx_col) = mpsc::channel(1);
 
     let cli_task = async move {
         loop {
@@ -81,6 +88,9 @@ async fn main() {
                 continue;
             };
             println!("SEND {cmd:?}");
+            if let Event::Move(Move { col }) = cmd {
+                tx_col.send(col).await.unwrap();
+            };
             tx.send(GameEvent { event: Some(cmd) }).await.unwrap();
         }
     };
@@ -107,12 +117,67 @@ async fn main() {
 
     tokio::spawn(cli_task);
 
+    let mut game: Option<Connect4Game> = None;
+
     tokio::spawn(async move {
         while let Some(evt) = stream.next().await {
             match evt {
                 Ok(evt) => {
                     let evt = evt.event.unwrap();
-                    println!("RECV {evt:?}")
+                    println!("RECV {evt:?}");
+                    match evt {
+                        Event::Move(Move { col }) => {
+                            let Some(game) = game.as_mut() else {
+                                eprintln!("Received a move event but not in a game");
+                                continue;
+                            };
+                            game.play_no_user(col as u8);
+                            println!("{}", game.board_to_str());
+                        }
+                        Event::MoveValid(MoveValid { valid }) => {
+                            let Some(game) = game.as_mut() else {
+                                eprintln!("Received a movevalid event but not in a game");
+                                continue;
+                            };
+                            if !valid {
+                                eprintln!("User made an invalid move. Try again.");
+                            }
+                            let col = rx_col.try_recv().unwrap();
+                            game.play_no_user(col as u8);
+                            println!("{}", game.board_to_str());
+                        }
+                        Event::GameOver(GameOver { kind }) => {
+                            if game.is_none() {
+                                eprintln!("Received a gameover event but not in a game");
+                            };
+                            println!("GAMEOVER: {kind:?}");
+                            game = None;
+                        }
+                        Event::RivalLeft(_) => {
+                            if game.is_none() {
+                                eprintln!("Received a rivalleft event but not in a game");
+                            };
+                            println!("Rival left!");
+                            game = None;
+                        }
+                        Event::NewGame(NewGame {
+                            game_id,
+                            rival,
+                            first_turn,
+                        }) => {
+                            println!("Starting a new game {game_id} vs {rival}.");
+                            if first_turn {
+                                println!("Your turn.");
+                            } else {
+                                println!("Rival starts.");
+                            }
+                            game =
+                                Some(Connect4Game::new(game_id, user.clone(), rival, first_turn));
+                        }
+                        Event::SearchGame(_) => {
+                            println!("Ignoring...");
+                        }
+                    }
                 }
                 Err(_) => println!("Disconnected from server"),
             }
