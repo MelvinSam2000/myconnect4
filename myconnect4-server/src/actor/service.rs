@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use thiserror::Error;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
@@ -81,51 +83,78 @@ pub enum MessageOutInner {
 }
 
 pub struct ServiceActor {
+    state: ActorState,
+    rx_in: Receiver<MessageIn>,
+}
+
+#[derive(Clone)]
+struct ActorState {
     tx_in: Sender<MessageIn>,
     tx_out: Sender<MessageOut>,
-    rx_in: Option<Receiver<MessageIn>>,
-    map_clients_out: Arc<RwLock<HashMap<String, Sender<MessageInInner>>>>,
+    map_client_channels: Arc<RwLock<HashMap<String, Sender<MessageInInner>>>>,
+}
+
+#[derive(Debug, Error)]
+enum ActorSendError {
+    #[error("Error sending msg: {0}")]
+    MessageIn(#[from] SendError<MessageIn>),
+    #[error("Error sending msg: {0}")]
+    MessageOut(#[from] SendError<MessageOut>),
+    #[error("Error sending msg: {0}")]
+    GameEvent(#[from] SendError<GameEvent>),
 }
 
 impl ServiceActor {
     pub fn new(tx_out: Sender<MessageOut>) -> Self {
         let (tx_in, rx_in) = mpsc::channel(BUFFER_MAX);
+        let map_client_channels = Arc::new(RwLock::new(HashMap::new()));
         Self {
-            tx_in,
-            tx_out,
-            rx_in: Some(rx_in),
-            map_clients_out: Arc::new(RwLock::new(HashMap::new())),
+            state: ActorState {
+                tx_in,
+                tx_out,
+                map_client_channels,
+            },
+            rx_in,
         }
     }
 
     pub fn get_sender(&self) -> Sender<MessageIn> {
-        self.tx_in.clone()
+        self.state.tx_in.clone()
     }
 
-    pub fn start(mut self) {
-        let map_clients_out = self.map_clients_out.clone();
-        let rx_in = self.rx_in.take();
+    pub fn start(self) {
+        let ServiceActor { state, mut rx_in } = self;
 
-        // grpc server
+        // grpc server start
+        let state_1 = state.clone();
         tokio::spawn(async move {
+            let state = state_1;
             let addr = "127.0.0.1:50050".parse().expect("Invalid address provided");
 
             log::info!("Server listening on {addr}");
 
-            Server::builder()
-                .add_service(MyConnect4ServiceServer::new(self))
+            if let Err(e) = Server::builder()
+                .add_service(MyConnect4ServiceServer::new(state))
                 .serve(addr)
                 .await
-                .unwrap();
+            {
+                log::error!("Service actor terminated due to: {e}");
+            }
         });
 
         // message rerouting
+        let state_2 = state.clone();
         tokio::spawn(async move {
-            let mut rx_in = rx_in.unwrap();
+            let state = state_2;
             while let Some(msg) = rx_in.recv().await {
                 let MessageIn { user, inner: msg } = msg;
-                if let Some(tx) = map_clients_out.read().await.get(&user) {
-                    tx.send(msg).await.unwrap();
+                let rmap = state.map_client_channels.read().await;
+                let tx = rmap.get(&user).cloned();
+                drop(rmap);
+                if let Some(tx) = tx {
+                    if let Err(e) = tx.send(msg).await {
+                        log::error!("Could not route message to '{user}' due to: {e}");
+                    }
                 }
             }
         });
@@ -133,7 +162,7 @@ impl ServiceActor {
 }
 
 #[tonic::async_trait]
-impl MyConnect4Service for ServiceActor {
+impl MyConnect4Service for ActorState {
     type StreamEventsStream =
         Pin<Box<dyn Stream<Item = Result<GameEvent, Status>> + Send + 'static>>;
 
@@ -157,101 +186,55 @@ impl MyConnect4Service for ServiceActor {
             })?
             .to_string();
 
-        if self.map_clients_out.read().await.contains_key(&user) {
+        let mut wmap = self.map_client_channels.write().await;
+        if wmap.contains_key(&user) {
             log::warn!("Rejected a connection with invalid user: {user}");
             return Err(Status::new(Code::Cancelled, "The username is taken."));
         }
-
+        let (tx, mut rx) = mpsc::channel(CLIENT_BUFFER_MAX);
+        let (tx_in, mut rx_in) = mpsc::channel(CLIENT_BUFFER_MAX);
+        wmap.insert(user.clone(), tx_in);
+        drop(wmap);
         log::info!("User {user} joined.");
 
         let mut stream_in = request.into_inner();
 
-        let (tx, mut rx) = tokio::sync::mpsc::channel(CLIENT_BUFFER_MAX);
-        let (tx_in, mut rx_in) = mpsc::channel(CLIENT_BUFFER_MAX);
-
-        self.map_clients_out
-            .write()
-            .await
-            .insert(user.clone(), tx_in);
-
-        log::debug!("Registered user channel for {user}");
-
         let tx_out = self.tx_out.clone();
 
-        let map_clients_out = self.map_clients_out.clone();
+        let map_client_channels = self.map_client_channels.clone();
 
+        // handle messages from controller
+        let state_1 = self.clone();
         tokio::spawn(async move {
+            let state = state_1;
             while let Some(msg) = rx_in.recv().await {
-                match msg {
-                    MessageInInner::NewGame {
-                        game_id,
-                        rival,
-                        first_turn,
-                    } => tx
-                        .send(GameEvent {
-                            event: Some(Event::NewGame(NewGame {
-                                game_id,
-                                rival,
-                                first_turn,
-                            })),
-                        })
-                        .await
-                        .unwrap(),
-                    MessageInInner::MoveValid { valid } => tx
-                        .send(GameEvent {
-                            event: Some(Event::MoveValid(MoveValid { valid })),
-                        })
-                        .await
-                        .unwrap(),
-                    MessageInInner::RivalMove { col } => tx
-                        .send(GameEvent {
-                            event: Some(Event::Move(Move { col: col as u32 })),
-                        })
-                        .await
-                        .unwrap(),
-                    MessageInInner::GameOver { won } => {
-                        let gameover = match won {
-                            Some(user_won) => Event::GameOver(GameOver {
-                                kind: Some(Kind::Winner(Winner { user_won })),
-                            }),
-                            None => Event::GameOver(GameOver {
-                                kind: Some(Kind::Draw(Empty {})),
-                            }),
-                        };
-                        tx.send(GameEvent {
-                            event: Some(gameover),
-                        })
-                        .await
-                        .unwrap();
-                    }
-                    MessageInInner::RivalLeft => {
-                        tx.send(GameEvent {
-                            event: Some(Event::RivalLeft(Empty {})),
-                        })
-                        .await
-                        .unwrap();
-                    }
+                log::debug!("RECV {msg:?}");
+                if let Err(e) = state.handle_msg_in_inner(&tx, msg).await {
+                    log::error!("{e}");
                 }
             }
         });
 
+        // handle messages from grpc client
+        let state_2 = self.clone();
         tokio::spawn(async move {
+            let state = state_2;
             while let Some(evt) = stream_in.next().await {
                 let user = user.clone();
                 let evt = match evt {
                     Ok(evt) => evt,
                     Err(err_status) => {
-                        let mut wmap = map_clients_out.write().await;
-                        wmap.remove(&user).unwrap();
-                        drop(wmap);
+                        map_client_channels.write().await.remove(&user);
                         log::info!("{user} left.");
-                        tx_out
+                        if let Err(e) = tx_out
                             .send(MessageOut {
                                 user: user.clone(),
                                 inner: MessageOutInner::UserLeft,
                             })
                             .await
-                            .unwrap();
+                        {
+                            log::error!("{user} could not send: {e}");
+                        }
                         match err_status.code() {
                             Code::Cancelled | Code::Unknown => {}
                             code @ _ => {
@@ -267,43 +250,21 @@ impl MyConnect4Service for ServiceActor {
                     log::warn!("User {user} sent an empty event. Ignoring.");
                     continue;
                 };
-                log::debug!("Received {event:?} from {user}");
-                match event {
-                    Event::Move(Move { col }) => {
-                        let col = col as u8;
-                        tx_out
-                            .send(MessageOut {
-                                user,
-                                inner: MessageOutInner::Move { col },
-                            })
-                            .await
-                            .unwrap();
-                    }
-                    Event::SearchGame(_) => tx_out
-                        .send(MessageOut {
-                            user,
-                            inner: MessageOutInner::SearchGame,
-                        })
-                        .await
-                        .unwrap(),
-                    Event::GameOver(_)
-                    | Event::NewGame(_)
-                    | Event::MoveValid(_)
-                    | Event::RivalLeft(_) => {
-                        log::warn!("Ignoring: {event:?}");
-                    }
+                log::debug!("RECV {event:?} from {user}");
+                if let Err(e) = state.handle_game_evt(&user, event).await {
+                    log::error!("{user} could not send: {e}");
                 }
             }
         });
 
-        let stream_out = async_stream::try_stream! {
+        let stream_resp = async_stream::try_stream! {
             while let Some(evt) = rx.recv().await {
                 yield evt;
             }
         };
 
         Ok(Response::new(
-            Box::pin(stream_out) as Self::StreamEventsStream
+            Box::pin(stream_resp) as Self::StreamEventsStream
         ))
     }
 
@@ -315,10 +276,16 @@ impl MyConnect4Service for ServiceActor {
                 inner: MessageOutInner::QueryGetState { respond_to: tx },
             })
             .await
-            .unwrap();
-        let state = rx.await.unwrap();
+            .map_err(|e| {
+                log::error!("Could not send: {e}");
+                Status::new(Code::Internal, "Internal server error")
+            })?;
+        let state = rx.await.map_err(|e| {
+            log::error!("Could not recv: {e}");
+            Status::new(Code::Internal, "Internal server error")
+        })?;
         let users = self
-            .map_clients_out
+            .map_client_channels
             .read()
             .await
             .keys()
@@ -340,7 +307,94 @@ impl MyConnect4Service for ServiceActor {
                 inner: MessageOutInner::SpawnSeveralBots { number },
             })
             .await
-            .unwrap();
+            .map_err(|e| {
+                log::error!("Could not send: {e}");
+                Status::new(Code::Internal, "Internal server error")
+            })?;
         Ok(Response::new(Empty {}))
+    }
+}
+
+impl ActorState {
+    async fn handle_msg_in_inner(
+        &self,
+        tx: &Sender<GameEvent>,
+        msg: MessageInInner,
+    ) -> Result<(), ActorSendError> {
+        match msg {
+            MessageInInner::NewGame {
+                game_id,
+                rival,
+                first_turn,
+            } => {
+                tx.send(GameEvent {
+                    event: Some(Event::NewGame(NewGame {
+                        game_id,
+                        rival,
+                        first_turn,
+                    })),
+                })
+                .await?;
+            }
+            MessageInInner::MoveValid { valid } => {
+                tx.send(GameEvent {
+                    event: Some(Event::MoveValid(MoveValid { valid })),
+                })
+                .await?
+            }
+            MessageInInner::RivalMove { col } => {
+                tx.send(GameEvent {
+                    event: Some(Event::Move(Move { col: col as u32 })),
+                })
+                .await?
+            }
+            MessageInInner::GameOver { won } => {
+                let gameover = match won {
+                    Some(user_won) => Event::GameOver(GameOver {
+                        kind: Some(Kind::Winner(Winner { user_won })),
+                    }),
+                    None => Event::GameOver(GameOver {
+                        kind: Some(Kind::Draw(Empty {})),
+                    }),
+                };
+                tx.send(GameEvent {
+                    event: Some(gameover),
+                })
+                .await?;
+            }
+            MessageInInner::RivalLeft => {
+                tx.send(GameEvent {
+                    event: Some(Event::RivalLeft(Empty {})),
+                })
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_game_evt(&self, user: &str, event: Event) -> Result<(), ActorSendError> {
+        match event {
+            Event::Move(Move { col }) => {
+                let col = col as u8;
+                self.tx_out
+                    .send(MessageOut {
+                        user: user.to_string(),
+                        inner: MessageOutInner::Move { col },
+                    })
+                    .await?;
+            }
+            Event::SearchGame(_) => {
+                self.tx_out
+                    .send(MessageOut {
+                        user: user.to_string(),
+                        inner: MessageOutInner::SearchGame,
+                    })
+                    .await?
+            }
+            Event::GameOver(_) | Event::NewGame(_) | Event::MoveValid(_) | Event::RivalLeft(_) => {
+                log::warn!("Ignoring: {event:?}");
+            }
+        }
+        Ok(())
     }
 }

@@ -2,7 +2,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
+use thiserror::Error;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
@@ -27,15 +29,20 @@ pub enum MessageOut {
 }
 
 pub struct BotActor {
+    state: ActorState,
+    rx_in: Receiver<MessageIn>,
+    rx_s_in: Receiver<service::MessageInInner>,
+}
+
+#[derive(Clone)]
+struct ActorState {
     bot_id: String,
     tx_in: Sender<MessageIn>,
     #[allow(dead_code)]
     tx_out: Sender<MessageOut>,
-    rx_in: Receiver<MessageIn>,
     tx_s_in: Sender<service::MessageInInner>,
     tx_s_out: Sender<service::MessageOut>,
-    rx_s_in: Receiver<service::MessageInInner>,
-    state: Arc<Mutex<BotState>>,
+    bot_state: Arc<Mutex<BotState>>,
     perma_play: Arc<AtomicBool>,
 }
 
@@ -43,6 +50,20 @@ pub enum BotState {
     Idle,
     Searching,
     Playing { game: Connect4Game },
+}
+
+#[derive(Debug, Error)]
+enum ActorSendError {
+    #[error("Error sending msg: {0}")]
+    MessageIn(#[from] SendError<MessageIn>),
+    #[error("Error sending msg: {0}")]
+    MessageOut(#[from] SendError<MessageOut>),
+    #[error("Error sending msg: {0}")]
+    ServiceMessageIn(#[from] SendError<service::MessageIn>),
+    #[error("Error sending msg: {0}")]
+    ServiceMessageOut(#[from] SendError<service::MessageOut>),
+    #[error("Error sending oneshot")]
+    Oneshot,
 }
 
 impl std::fmt::Debug for BotState {
@@ -61,153 +82,74 @@ impl BotActor {
         let (tx_s_in, rx_s_in) = mpsc::channel(BUFFER_MAX);
         let id = rand::random::<u64>();
         let bot_id = format!("bot-{id}");
+        let bot_state = Arc::new(Mutex::new(BotState::Idle));
+        let perma_play = Arc::new(AtomicBool::new(false));
+
         Self {
-            bot_id: bot_id,
-            tx_in,
-            tx_out,
+            state: ActorState {
+                tx_in,
+                tx_out,
+                tx_s_in,
+                tx_s_out,
+                bot_id,
+                bot_state,
+                perma_play,
+            },
             rx_in,
-            tx_s_in,
-            tx_s_out,
             rx_s_in,
-            state: Arc::new(Mutex::new(BotState::Idle)),
-            perma_play: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub fn get_id(&self) -> String {
-        self.bot_id.clone()
+        self.state.bot_id.clone()
     }
 
     pub fn get_sender(&self) -> Sender<MessageIn> {
-        self.tx_in.clone()
+        self.state.tx_in.clone()
     }
 
     pub fn get_service_sender(&self) -> Sender<service::MessageInInner> {
-        self.tx_s_in.clone()
+        self.state.tx_s_in.clone()
     }
 
-    pub fn start(mut self) {
+    pub fn start(self) {
+        let BotActor {
+            state,
+            mut rx_in,
+            mut rx_s_in,
+        } = self;
+
         // handle messages from bot manager
-        let botstate_1 = self.state.clone();
-        let botstate_2 = self.state.clone();
-        let bot_id_1 = self.bot_id.clone();
-        let bot_id_2 = self.bot_id.clone();
-
-        let tx_s_out = self.tx_s_out.clone();
-        let perma_play = self.perma_play.clone();
-
+        let state_1 = state.clone();
         tokio::spawn(async move {
-            let botstate = botstate_1;
-            let bot_id = bot_id_1;
-            log::debug!("Started bot actor {bot_id}");
-            while let Some(msg) = self.rx_in.recv().await {
-                log::debug!("{bot_id} RECV {msg:?}");
-                match msg {
-                    MessageIn::SearchForGame => {
-                        let mut botstate = botstate.lock().await;
-                        let BotState::Idle = *botstate else {
-                            return;
-                        };
-                        *botstate = BotState::Searching;
-                        self.tx_s_out
-                            .send(service::MessageOut {
-                                user: self.bot_id.clone(),
-                                inner: service::MessageOutInner::SearchGame,
-                            })
-                            .await
-                            .unwrap();
-                    }
-                    MessageIn::QueryIdle { respond_to } => {
-                        let botstate = botstate.lock().await;
-                        let idle = if let BotState::Idle = *botstate {
-                            true
-                        } else {
-                            false
-                        };
-                        respond_to.send(idle).unwrap();
-                    }
-                    MessageIn::PermaPlay(mode) => {
-                        self.perma_play
-                            .store(mode, std::sync::atomic::Ordering::SeqCst);
-                    }
+            let state = state_1;
+            log::debug!("Started bot actor {}", &state.bot_id);
+            while let Some(msg) = rx_in.recv().await {
+                log::debug!("RECV {msg:?} from {}", &state.bot_id);
+                if let Err(e) = Self::handle_msg_in(&state, msg).await {
+                    log::error!("{e}");
                 }
             }
         });
 
         // handle messages from game update
+        let state_2 = state.clone();
         tokio::spawn(async move {
-            let botstate = botstate_2;
-            let bot_id = bot_id_2;
-            while let Some(msg) = self.rx_s_in.recv().await {
-                log::debug!("{bot_id} RECV {msg:?}");
-                match msg {
-                    service::MessageInInner::NewGame {
-                        game_id,
-                        rival,
-                        first_turn,
-                    } => {
-                        let mut botstate = botstate.lock().await;
-                        let mut game =
-                            Connect4Game::new_custom(game_id, bot_id.clone(), rival, first_turn);
-                        if first_turn {
-                            Self::play(&bot_id, &mut game, &tx_s_out).await;
-                        }
-                        *botstate = BotState::Playing { game };
-                    }
-                    service::MessageInInner::MoveValid { valid } => {
-                        if valid == false {
-                            log::error!("{bot_id} made an invalid move?");
-                        }
-                    }
-                    service::MessageInInner::RivalMove { col } => {
-                        let mut botstate = botstate.lock().await;
-                        let BotState::Playing { game } = &mut *botstate else {
-                            log::warn!(
-                                "Received a rivalmove even though bot is not in playing state..."
-                            );
-                            continue;
-                        };
-                        if !game.play_no_user(col) {
-                            log::error!("Rival made an invalid move");
-                            continue;
-                        }
-                        if game.is_gameover().is_some() {
-                            continue;
-                        }
-                        Self::play(&bot_id, game, &tx_s_out).await;
-                    }
-                    service::MessageInInner::GameOver { won } => {
-                        let result = match won {
-                            None => "DRAW",
-                            Some(false) => "LOST",
-                            Some(true) => "VICTORY",
-                        };
-                        log::debug!("Game over for {bot_id}: {result}");
-                        let mut botstate = botstate.lock().await;
-                        *botstate = BotState::Idle;
-                        if perma_play.load(std::sync::atomic::Ordering::SeqCst) {
-                            self.tx_in.send(MessageIn::SearchForGame).await.unwrap();
-                        }
-                    }
-                    service::MessageInInner::RivalLeft => {
-                        let mut botstate = botstate.lock().await;
-                        let BotState::Playing { game: _ } = &*botstate else {
-                            log::warn!(
-                                "Received a rivalleft even though bot is not in playing state..."
-                            );
-                            continue;
-                        };
-                        *botstate = BotState::Idle;
-                        if perma_play.load(std::sync::atomic::Ordering::SeqCst) {
-                            self.tx_in.send(MessageIn::SearchForGame).await.unwrap();
-                        }
-                    }
+            let state = state_2;
+            while let Some(msg) = rx_s_in.recv().await {
+                log::debug!("RECV {msg:?} from {}", &state.bot_id);
+                if let Err(e) = Self::handle_service_msg_in(&state, msg).await {
+                    log::error!("{e}");
                 }
             }
         });
     }
 
-    async fn play(bot_id: &str, game: &mut Connect4Game, tx_s_out: &Sender<service::MessageOut>) {
+    async fn play(
+        bot_id: &str,
+        game: &mut Connect4Game,
+        tx_s_out: &Sender<service::MessageOut>,
+    ) -> Result<(), ActorSendError> {
         sleep(Duration::from_millis(300)).await;
         let mut valid = false;
         let mut col = 0;
@@ -220,14 +162,118 @@ impl BotActor {
         }
         if !valid {
             log::debug!("Bot unable to make another move. Waiting on game over event.");
-            return;
+            return Ok(());
         }
         tx_s_out
             .send(service::MessageOut {
                 user: bot_id.to_string(),
                 inner: service::MessageOutInner::Move { col },
             })
-            .await
-            .unwrap();
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_msg_in(state: &ActorState, msg: MessageIn) -> Result<(), ActorSendError> {
+        match msg {
+            MessageIn::SearchForGame => {
+                let mut botstate = state.bot_state.lock().await;
+                let BotState::Idle = *botstate else {
+                    return Ok(());
+                };
+                *botstate = BotState::Searching;
+                drop(botstate);
+                state
+                    .tx_s_out
+                    .send(service::MessageOut {
+                        user: state.bot_id.clone(),
+                        inner: service::MessageOutInner::SearchGame,
+                    })
+                    .await?;
+            }
+            MessageIn::QueryIdle { respond_to } => {
+                let botstate = state.bot_state.lock().await;
+                let idle = if let BotState::Idle = *botstate {
+                    true
+                } else {
+                    false
+                };
+                drop(botstate);
+                respond_to.send(idle).map_err(|_| ActorSendError::Oneshot)?;
+            }
+            MessageIn::PermaPlay(mode) => {
+                state
+                    .perma_play
+                    .store(mode, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_service_msg_in(
+        state: &ActorState,
+        msg: service::MessageInInner,
+    ) -> Result<(), ActorSendError> {
+        match msg {
+            service::MessageInInner::NewGame {
+                game_id,
+                rival,
+                first_turn,
+            } => {
+                let BotState::Searching = *state.bot_state.lock().await else {
+                    return Ok(());
+                };
+                let mut game =
+                    Connect4Game::new_custom(game_id, state.bot_id.clone(), rival, first_turn);
+                if first_turn {
+                    Self::play(&state.bot_id, &mut game, &state.tx_s_out).await?;
+                }
+                *state.bot_state.lock().await = BotState::Playing { game };
+            }
+            service::MessageInInner::MoveValid { valid } => {
+                if valid == false {
+                    log::error!("{} made an invalid move?", &state.bot_id);
+                }
+            }
+            service::MessageInInner::RivalMove { col } => {
+                let mut botstate = state.bot_state.lock().await;
+                let BotState::Playing { game } = &mut *botstate else {
+                    log::warn!("Received a rivalmove even though bot is not in playing state...");
+                    return Ok(());
+                };
+                if !game.play_no_user(col) {
+                    log::error!("Rival made an invalid move");
+                    return Ok(());
+                }
+                if game.is_gameover().is_some() {
+                    return Ok(());
+                }
+                Self::play(&state.bot_id, game, &state.tx_s_out).await?;
+            }
+            service::MessageInInner::GameOver { won } => {
+                let result = match won {
+                    None => "DRAW",
+                    Some(false) => "LOST",
+                    Some(true) => "VICTORY",
+                };
+                log::debug!("Game over for {}: {result}", &state.bot_id);
+                let mut botstate = state.bot_state.lock().await;
+                *botstate = BotState::Idle;
+                if state.perma_play.load(std::sync::atomic::Ordering::SeqCst) {
+                    state.tx_in.send(MessageIn::SearchForGame).await?;
+                }
+            }
+            service::MessageInInner::RivalLeft => {
+                let mut botstate = state.bot_state.lock().await;
+                let BotState::Playing { game: _ } = &*botstate else {
+                    log::warn!("Received a rivalleft even though bot is not in playing state...");
+                    return Ok(());
+                };
+                *botstate = BotState::Idle;
+                if state.perma_play.load(std::sync::atomic::Ordering::SeqCst) {
+                    state.tx_in.send(MessageIn::SearchForGame).await?;
+                }
+            }
+        }
+        Ok(())
     }
 }

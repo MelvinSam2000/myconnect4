@@ -1,4 +1,8 @@
+use thiserror::Error;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::Receiver;
+use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 
 use super::BUFFER_MAX;
@@ -58,10 +62,15 @@ pub enum MessageOut {
 }
 
 pub struct GameActor {
-    tx_in: mpsc::Sender<MessageIn>,
-    tx_out: mpsc::Sender<MessageOut>,
-    rx: mpsc::Receiver<MessageIn>,
+    state: ActorState,
+    rx_in: Receiver<MessageIn>,
     repo: Connect4Repo,
+}
+
+#[derive(Clone)]
+struct ActorState {
+    tx_in: Sender<MessageIn>,
+    tx_out: Sender<MessageOut>,
 }
 
 #[derive(Debug)]
@@ -73,154 +82,168 @@ pub struct StatePayload {
     _total_games_played: u128,
 }
 
+#[derive(Debug, Error)]
+enum ActorSendError {
+    #[error("Error sending msg: {0}")]
+    MessageIn(#[from] SendError<MessageIn>),
+    #[error("Error sending msg: {0}")]
+    MessageOut(#[from] SendError<MessageOut>),
+    #[error("Error sending oneshot")]
+    Oneshot,
+}
+
 impl GameActor {
-    pub fn new(tx_out: mpsc::Sender<MessageOut>) -> Self {
-        let (tx, rx) = mpsc::channel(BUFFER_MAX);
+    pub fn new(tx_out: Sender<MessageOut>) -> Self {
+        let (tx_in, rx_in) = mpsc::channel(BUFFER_MAX);
         Self {
-            tx_in: tx,
-            tx_out,
-            rx,
+            state: ActorState { tx_in, tx_out },
+            rx_in,
             repo: Connect4Repo::default(),
         }
     }
 
-    pub fn get_sender(&self) -> mpsc::Sender<MessageIn> {
-        self.tx_in.clone()
+    pub fn get_sender(&self) -> Sender<MessageIn> {
+        self.state.tx_in.clone()
     }
 
-    pub fn start(mut self) {
+    pub fn start(self) {
+        let GameActor {
+            state,
+            mut rx_in,
+            mut repo,
+        } = self;
+
         log::debug!("Game actor started.");
+        // listen for incoming events
         tokio::spawn(async move {
-            while let Some(req) = self.rx.recv().await {
-                log::debug!("RECV {req:?}");
-                log::trace!("start");
-                match req {
-                    MessageIn::HeartBeat { respond_to } => {
-                        let _ = respond_to.send(());
-                    }
-                    MessageIn::NewGame { users } => {
-                        let game0 = self.repo.get_game_id(&users.0);
-                        let game1 = self.repo.get_game_id(&users.1);
-                        if game0.is_some() || game1.is_some() {
-                            let resp = match (game0, game1) {
-                                (None, None) => unreachable!(),
-                                (None, Some(_)) => MessageOut::UserAlreadyInGame {
-                                    reject_users: vec![users.1],
-                                    rematchmake_users: vec![users.0],
-                                },
-                                (Some(_), None) => MessageOut::UserAlreadyInGame {
-                                    reject_users: vec![users.0],
-                                    rematchmake_users: vec![users.1],
-                                },
-                                (Some(_), Some(_)) => MessageOut::UserAlreadyInGame {
-                                    reject_users: vec![users.0, users.1],
-                                    rematchmake_users: vec![],
-                                },
-                            };
-                            self.tx_out.send(resp).await.unwrap();
-                            continue;
-                        }
-                        let game_id = self.repo.create_new_game(users.clone());
-                        let game = self
-                            .repo
-                            .get_game(game_id)
-                            .expect("Game was just created...");
-                        log::info!("New game '{game_id}' created: {} vs {}", users.0, users.1);
-                        self.tx_out
-                            .send(MessageOut::NewGame {
-                                game_id,
-                                users: game.users.clone(),
-                                first_turn: game.user_first.clone(),
-                            })
-                            .await
-                            .unwrap();
-                    }
-                    MessageIn::Move { user, col } => {
-                        let Some(game_id) = self.repo.get_game_id(&user) else {
-                            self.tx_out
-                                .send(MessageOut::UserNotInGame { user })
-                                .await
-                                .unwrap();
-                            continue;
-                        };
-                        let Some(game) = self.repo.get_game(game_id) else {
-                            log::error!("No game object with game id: {game_id}");
-                            continue;
-                        };
-                        let valid = game.play(&user, col);
-                        let rival = game.get_rival(&user);
-                        self.tx_out
-                            .send(MessageOut::MoveValid {
-                                player: user.clone(),
-                                rival: rival.clone(),
-                                valid,
-                                col,
-                            })
-                            .await
-                            .unwrap();
-                        if log::log_enabled!(log::Level::Debug) {
-                            let board = game.board_to_str();
-                            log::debug!("BOARD:\n{board}\n");
-                        }
-                        if let Some(gameover) = game.is_gameover() {
-                            let gameover = match gameover {
-                                GameOver::Winner(winner) => {
-                                    let loser = game.get_rival(&winner);
-                                    log::info!(
-                                        "Game over ({game_id}). Winner: {winner}, Loser: {loser}"
-                                    );
-                                    MessageOut::GameOverWinner { winner, loser }
-                                }
-                                GameOver::Draw => {
-                                    let users = (user, rival);
-                                    log::info!(
-                                        "Game over ({game_id}). Draw: {} - {}",
-                                        &users.0,
-                                        &users.1
-                                    );
-                                    MessageOut::GameOverDraw { users }
-                                }
-                            };
-                            self.repo.delete_game(game_id);
-                            self.tx_out.send(gameover).await.unwrap();
-                        }
-                    }
-                    MessageIn::UserLeft { user } => {
-                        if let Some(rival) = self.repo.delete_user(&user) {
-                            log::info!("{user} left the game. Notifying {rival} to leave.");
-                            self.tx_out
-                                .send(MessageOut::AbortGame { user: rival })
-                                .await
-                                .unwrap();
-                        }
-                    }
-                    MessageIn::QueryGetState { respond_to } => {
-                        let mut users = self.repo.get_users();
-                        let n_users = users.len();
-                        let mut games = self.repo.get_game_ids();
-                        let n_games = games.len();
-                        let total_games_played = self.repo.total_games_played;
-
-                        if n_users > 100 {
-                            users = vec![];
-                        }
-                        if n_games > 100 {
-                            games = vec![];
-                        }
-
-                        respond_to
-                            .send(StatePayload {
-                                _users_playing: users,
-                                _games: games,
-                                _num_games: n_games,
-                                _num_users_playing: n_users,
-                                _total_games_played: total_games_played,
-                            })
-                            .unwrap();
-                    }
+            while let Some(msg) = rx_in.recv().await {
+                log::debug!("RECV {msg:?}");
+                if let Err(e) = Self::handle_msg_in(&state, &mut repo, msg).await {
+                    log::error!("{e}");
                 }
-                log::trace!("end");
             }
         });
+    }
+
+    async fn handle_msg_in(
+        state: &ActorState,
+        repo: &mut Connect4Repo,
+        msg: MessageIn,
+    ) -> Result<(), ActorSendError> {
+        match msg {
+            MessageIn::HeartBeat { respond_to } => {
+                respond_to.send(()).map_err(|_| ActorSendError::Oneshot)?;
+            }
+            MessageIn::NewGame { users } => {
+                let game0 = repo.get_game_id(&users.0);
+                let game1 = repo.get_game_id(&users.1);
+                if game0.is_some() || game1.is_some() {
+                    let resp = match (game0, game1) {
+                        (None, None) => unreachable!(),
+                        (None, Some(_)) => MessageOut::UserAlreadyInGame {
+                            reject_users: vec![users.1],
+                            rematchmake_users: vec![users.0],
+                        },
+                        (Some(_), None) => MessageOut::UserAlreadyInGame {
+                            reject_users: vec![users.0],
+                            rematchmake_users: vec![users.1],
+                        },
+                        (Some(_), Some(_)) => MessageOut::UserAlreadyInGame {
+                            reject_users: vec![users.0, users.1],
+                            rematchmake_users: vec![],
+                        },
+                    };
+                    state.tx_out.send(resp).await?;
+                    return Ok(());
+                }
+                let game_id = repo.create_new_game(users.clone());
+                let game = repo.get_game(game_id).expect("Game was just created...");
+                log::info!("New game '{game_id}' created: {} vs {}", users.0, users.1);
+                state
+                    .tx_out
+                    .send(MessageOut::NewGame {
+                        game_id,
+                        users: game.users.clone(),
+                        first_turn: game.user_first.clone(),
+                    })
+                    .await?;
+            }
+            MessageIn::Move { user, col } => {
+                let Some(game_id) = repo.get_game_id(&user) else {
+                    state
+                        .tx_out
+                        .send(MessageOut::UserNotInGame { user })
+                        .await?;
+                    return Ok(());
+                };
+                let Some(game) = repo.get_game(game_id) else {
+                    log::error!("No game object with game id: {game_id}");
+                    return Ok(());
+                };
+                let valid = game.play(&user, col);
+                let rival = game.get_rival(&user);
+                state
+                    .tx_out
+                    .send(MessageOut::MoveValid {
+                        player: user.clone(),
+                        rival: rival.clone(),
+                        valid,
+                        col,
+                    })
+                    .await?;
+                if log::log_enabled!(log::Level::Debug) {
+                    let board = game.board_to_str();
+                    log::debug!("BOARD:\n{board}\n");
+                }
+                if let Some(gameover) = game.is_gameover() {
+                    let gameover = match gameover {
+                        GameOver::Winner(winner) => {
+                            let loser = game.get_rival(&winner);
+                            log::info!("Game over ({game_id}). Winner: {winner}, Loser: {loser}");
+                            MessageOut::GameOverWinner { winner, loser }
+                        }
+                        GameOver::Draw => {
+                            let users = (user, rival);
+                            log::info!("Game over ({game_id}). Draw: {} - {}", &users.0, &users.1);
+                            MessageOut::GameOverDraw { users }
+                        }
+                    };
+                    repo.delete_game(game_id);
+                    state.tx_out.send(gameover).await?;
+                }
+            }
+            MessageIn::UserLeft { user } => {
+                if let Some(rival) = repo.delete_user(&user) {
+                    log::info!("{user} left the game. Notifying {rival} to leave.");
+                    state
+                        .tx_out
+                        .send(MessageOut::AbortGame { user: rival })
+                        .await?;
+                }
+            }
+            MessageIn::QueryGetState { respond_to } => {
+                let mut users = repo.get_users();
+                let n_users = users.len();
+                let mut games = repo.get_game_ids();
+                let n_games = games.len();
+                let total_games_played = repo.total_games_played;
+
+                if n_users > 100 {
+                    users = vec![];
+                }
+                if n_games > 100 {
+                    games = vec![];
+                }
+
+                let _ = respond_to.send(StatePayload {
+                    _users_playing: users,
+                    _games: games,
+                    _num_games: n_games,
+                    _num_users_playing: n_users,
+                    _total_games_played: total_games_played,
+                });
+            }
+        }
+        Ok(())
     }
 }

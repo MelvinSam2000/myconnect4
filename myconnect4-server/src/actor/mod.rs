@@ -1,4 +1,4 @@
-pub const BUFFER_MAX: usize = 100000;
+pub const BUFFER_MAX: usize = 10;
 
 pub mod bot;
 pub mod botmanager;
