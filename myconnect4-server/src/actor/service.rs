@@ -9,6 +9,8 @@ use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::sync::RwLock;
+use tokio::task::JoinSet;
+use tokio::time::sleep;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tonic::transport::Server;
@@ -20,6 +22,7 @@ use tonic::Status;
 use super::game;
 use super::matchmaking;
 use super::BUFFER_MAX;
+use super::HB_SEND_DUR;
 use crate::myconnect4::game_event::Event;
 use crate::myconnect4::game_over::Kind;
 use crate::myconnect4::my_connect4_service_server::MyConnect4Service;
@@ -80,6 +83,7 @@ pub enum MessageOutInner {
     SpawnSeveralBots {
         number: usize,
     },
+    HeartBeat,
 }
 
 pub struct ServiceActor {
@@ -125,9 +129,11 @@ impl ServiceActor {
     pub fn start(self) {
         let ServiceActor { state, mut rx_in } = self;
 
+        let mut tasks = JoinSet::new();
+
         // grpc server start
         let state_1 = state.clone();
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let state = state_1;
             let addr = "127.0.0.1:50050".parse().expect("Invalid address provided");
 
@@ -144,7 +150,7 @@ impl ServiceActor {
 
         // message rerouting
         let state_2 = state.clone();
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let state = state_2;
             while let Some(msg) = rx_in.recv().await {
                 let MessageIn { user, inner: msg } = msg;
@@ -156,6 +162,32 @@ impl ServiceActor {
                         log::error!("Could not route message to '{user}' due to: {e}");
                     }
                 }
+            }
+        });
+
+        // send heartbeat
+        let state_3 = state.clone();
+        tasks.spawn(async move {
+            let state = state_3;
+            loop {
+                sleep(HB_SEND_DUR).await;
+                if let Err(e) = state
+                    .tx_out
+                    .send(MessageOut {
+                        user: "*".to_string(),
+                        inner: MessageOutInner::HeartBeat,
+                    })
+                    .await
+                {
+                    log::error!("Could not send HB: {e}");
+                }
+            }
+        });
+
+        tokio::spawn(async move {
+            if let Some(_) = tasks.join_next().await {
+                log::error!("Terminating Service Actor");
+                tasks.abort_all();
             }
         });
     }
@@ -340,13 +372,13 @@ impl ActorState {
                 tx.send(GameEvent {
                     event: Some(Event::MoveValid(MoveValid { valid })),
                 })
-                .await?
+                .await?;
             }
             MessageInInner::RivalMove { col } => {
                 tx.send(GameEvent {
                     event: Some(Event::Move(Move { col: col as u32 })),
                 })
-                .await?
+                .await?;
             }
             MessageInInner::GameOver { won } => {
                 let gameover = match won {
@@ -389,7 +421,7 @@ impl ActorState {
                         user: user.to_string(),
                         inner: MessageOutInner::SearchGame,
                     })
-                    .await?
+                    .await?;
             }
             Event::GameOver(_) | Event::NewGame(_) | Event::MoveValid(_) | Event::RivalLeft(_) => {
                 log::warn!("Ignoring: {event:?}");

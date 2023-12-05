@@ -1,4 +1,5 @@
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -6,8 +7,10 @@ use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
+use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tokio::time::sleep;
+use tokio::time::Instant;
 
 use super::botmanager as bm;
 use super::game as g;
@@ -18,6 +21,7 @@ use super::service::ServiceActor;
 use super::BUFFER_MAX;
 use crate::actor::botmanager::BotManagerActor;
 use crate::actor::game::GameActor;
+use crate::actor::HB_RECV_WAIT_LIMIT;
 
 pub struct ActorController {
     state: ActorState,
@@ -43,6 +47,7 @@ struct ActorState {
     tx_s_in: Sender<s::MessageIn>,
     tx_bm_in: Sender<bm::MessageIn>,
     tx_bms_in: Sender<s::MessageIn>,
+    map_hb_times: Arc<RwLock<HashMap<ActorType, Instant>>>,
 }
 
 #[derive(Debug, Error)]
@@ -67,6 +72,14 @@ enum ActorSendError {
     Oneshot,
 }
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum ActorType {
+    MatchMaking,
+    Game,
+    Service,
+    BotManager,
+}
+
 impl ActorController {
     pub fn new() -> Self {
         let (tx_mm_out, rx_mm_out) = mpsc::channel(BUFFER_MAX);
@@ -87,6 +100,14 @@ impl ActorController {
         let tx_bm_in = bm_actor.get_sender();
         let tx_bms_in = bm_actor.get_service_sender();
 
+        let now = Instant::now();
+        let map_hb_times = Arc::new(RwLock::new(HashMap::from([
+            (ActorType::MatchMaking, now),
+            (ActorType::Game, now),
+            (ActorType::Service, now),
+            (ActorType::BotManager, now),
+        ])));
+
         Self {
             state: ActorState {
                 tx_mm_in,
@@ -94,6 +115,7 @@ impl ActorController {
                 tx_s_in,
                 tx_bm_in,
                 tx_bms_in,
+                map_hb_times,
             },
             rx_mm_out,
             mm_actor,
@@ -126,6 +148,8 @@ impl ActorController {
         let tx_bm_in = bm_actor.get_sender();
         let tx_bms_in = bm_actor.get_service_sender();
 
+        let map_hb_times = Arc::new(RwLock::new(HashMap::new()));
+
         Self {
             state: ActorState {
                 tx_mm_in,
@@ -133,6 +157,7 @@ impl ActorController {
                 tx_s_in,
                 tx_bm_in,
                 tx_bms_in,
+                map_hb_times,
             },
             rx_mm_out,
             mm_actor,
@@ -171,38 +196,30 @@ impl ActorController {
         g_actor.start();
         bm_actor.start();
 
+        log::debug!("Actor Controller started");
+        let mut tasks = JoinSet::new();
+
         let state_1 = state.clone();
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let state = state_1;
             loop {
-                sleep(Duration::from_millis(10000)).await;
-                let mut joinset = JoinSet::new();
-                let tx_mm_in = state.tx_mm_in.clone();
-                joinset.spawn(Self::hb_actor("MatchMaking", tx_mm_in, |respond_to| {
-                    mm::MessageIn::HeartBeat { respond_to }
-                }));
-                let tx_g_in = state.tx_g_in.clone();
-                joinset.spawn(Self::hb_actor("Game", tx_g_in, |respond_to| {
-                    g::MessageIn::HeartBeat { respond_to }
-                }));
-                /* TODO: Support HB for service actor
-                let tx_s_in = state.tx_s_in.clone();
-                joinset.spawn(Self::hb_actor("Game", tx_s_in, |respond_to| {
-                    s::MessageIn::HeartBeat { respond_to }
-                }));
-                */
-                let tx_bm_in = state.tx_bm_in.clone();
-                joinset.spawn(Self::hb_actor("BotManager", tx_bm_in, |respond_to| {
-                    bm::MessageIn::HeartBeat { respond_to }
-                }));
-
-                while joinset.join_next().await.is_some() {}
+                sleep(HB_RECV_WAIT_LIMIT).await;
+                let rmap = state.map_hb_times.read().await;
+                rmap.iter().for_each(|(actor, time_of_hb)| {
+                    let elapsed = time_of_hb.elapsed();
+                    if elapsed > HB_RECV_WAIT_LIMIT {
+                        log::warn!(
+                            "Have not received HB from {:?} actor since {}s ago",
+                            actor,
+                            elapsed.as_secs()
+                        );
+                    }
+                });
             }
         });
 
-        log::debug!("Controller actor started.");
         let state_2 = state.clone();
-        let _ = tokio::spawn(async move {
+        tasks.spawn(async move {
             let state = state_2;
             loop {
                 tokio::select! {
@@ -232,40 +249,17 @@ impl ActorController {
                     },
                     Some(msg) = rx_bm_out.recv() => {
                         log::debug!("RECV {msg:?} from BM actor");
-                        if let Err(e) = Self::handle_msg_bm_out(msg).await {
+                        if let Err(e) = Self::handle_msg_bm_out(&state, msg).await {
                             log::error!("{e}");
                         }
                     }
                 }
             }
-        })
-        .await;
-    }
+        });
 
-    async fn hb_actor<T>(
-        actor_label: &str,
-        tx_actor: Sender<T>,
-        hb: impl FnOnce(oneshot::Sender<()>) -> T,
-    ) {
-        let task = async {
-            let (tx, rx) = oneshot::channel();
-            tx_actor
-                //.send(mm::MessageIn::HeartBeat { respond_to: tx })
-                .send(hb(tx))
-                .await
-                .unwrap();
-            rx.await
-        };
-        tokio::select! {
-            res = task => {
-                match res {
-                    Ok(_) => log::debug!("HB from {actor_label} received"),
-                    Err(_) => log::error!("Did not receive HB from {actor_label} actor")
-                }
-            }
-            _ = sleep(Duration::from_millis(10000)) => {
-                log::error!("Did not receive HB from {actor_label} actor");
-            }
+        if let Some(_) = tasks.join_next().await {
+            log::error!("Terminating ActorController");
+            tasks.abort_all();
         }
     }
 
@@ -320,6 +314,13 @@ impl ActorController {
                     .send(bm::MessageIn::SpawnSeveral { number })
                     .await?
             }
+            s::MessageOutInner::HeartBeat => {
+                state
+                    .map_hb_times
+                    .write()
+                    .await
+                    .insert(ActorType::Service, Instant::now());
+            }
         }
         Ok(())
     }
@@ -334,6 +335,13 @@ impl ActorController {
             }
             mm::MessageOut::LongWait { user: _ } => {
                 state.tx_bm_in.send(bm::MessageIn::QueueOne).await?;
+            }
+            mm::MessageOut::HeartBeat => {
+                state
+                    .map_hb_times
+                    .write()
+                    .await
+                    .insert(ActorType::MatchMaking, Instant::now());
             }
         }
         Ok(())
@@ -479,13 +487,29 @@ impl ActorController {
                 )
                 .await?;
             }
+            g::MessageOut::HeartBeat => {
+                state
+                    .map_hb_times
+                    .write()
+                    .await
+                    .insert(ActorType::Game, Instant::now());
+            }
         }
         Ok(())
     }
 
-    async fn handle_msg_bm_out(msg: bm::MessageOut) -> Result<(), ActorSendError> {
+    async fn handle_msg_bm_out(
+        state: &ActorState,
+        msg: bm::MessageOut,
+    ) -> Result<(), ActorSendError> {
         match msg {
-            bm::MessageOut::Nothing => log::debug!("Ignoring."),
+            bm::MessageOut::HeartBeat => {
+                state
+                    .map_hb_times
+                    .write()
+                    .await
+                    .insert(ActorType::BotManager, Instant::now());
+            }
         }
         Ok(())
     }

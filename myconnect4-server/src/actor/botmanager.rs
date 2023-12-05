@@ -2,6 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use either::Either;
+use opentelemetry::global;
+use opentelemetry::trace::Span;
+use opentelemetry::trace::Tracer;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
@@ -10,11 +13,13 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
+use tokio::time::sleep;
 
 use super::bot;
 use super::service;
 use super::BUFFER_MAX;
 use crate::actor::bot::BotActor;
+use crate::actor::HB_SEND_DUR;
 
 #[derive(Debug)]
 pub enum MessageIn {
@@ -25,7 +30,7 @@ pub enum MessageIn {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum MessageOut {
-    Nothing,
+    HeartBeat,
 }
 
 pub struct BotManagerActor {
@@ -122,23 +127,30 @@ impl BotManagerActor {
         } = self;
 
         log::debug!("BotManager actor started.");
+        let mut tasks = JoinSet::new();
         // main event listening
         let state_1 = state.clone();
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let state = state_1;
             while let Some(msg) = rx_in.recv().await {
+                let tracer = global::tracer("Bot Manager Actor");
+                let mut span = tracer.start(format!("BM RECV {msg:?}"));
                 log::debug!("RECV {msg:?}");
                 if let Err(e) = Self::handle_msg_in(&state, msg).await {
                     log::error!("{e}");
                 }
+                span.end();
             }
         });
 
         // listening for player events
         let state_2 = state.clone();
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let state = state_2;
+
+            let tracer = global::tracer("Bot Manager Actor");
             while let Some(msg) = rx_s_in.recv().await {
+                let mut span = tracer.start(format!("BM RECV {msg:?}"));
                 log::debug!("RECV {msg:?}");
                 let service::MessageIn { user, inner } = msg;
                 if let Err(e) =
@@ -146,11 +158,24 @@ impl BotManagerActor {
                 {
                     log::error!("Error sending message to bot '{}' due to: {}", &user, e);
                 }
+                span.end();
+            }
+        });
+
+        // send heartbeat
+        let state_3 = state.clone();
+        tasks.spawn(async move {
+            let state = state_3;
+            loop {
+                sleep(HB_SEND_DUR).await;
+                if let Err(e) = state.tx_out.send(MessageOut::HeartBeat).await {
+                    log::error!("Could not send HB: {e}");
+                }
             }
         });
 
         // listening for bot events
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             while let Some(msg) = rx_b_out.recv().await {
                 match msg {
                     bot::MessageOut::Nothing => {
@@ -158,6 +183,13 @@ impl BotManagerActor {
                         log::warn!("Ignoring for now");
                     }
                 }
+            }
+        });
+
+        tokio::spawn(async move {
+            if let Some(_) = tasks.join_next().await {
+                log::error!("Terminating ActorController");
+                tasks.abort_all();
             }
         });
     }

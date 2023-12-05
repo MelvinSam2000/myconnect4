@@ -9,6 +9,7 @@ use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 use tokio::time::sleep;
 
 use super::service;
@@ -119,9 +120,11 @@ impl BotActor {
             mut rx_s_in,
         } = self;
 
+        let mut tasks = JoinSet::new();
+
         // handle messages from bot manager
         let state_1 = state.clone();
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let state = state_1;
             log::debug!("Started bot actor {}", &state.bot_id);
             while let Some(msg) = rx_in.recv().await {
@@ -134,13 +137,20 @@ impl BotActor {
 
         // handle messages from game update
         let state_2 = state.clone();
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let state = state_2;
             while let Some(msg) = rx_s_in.recv().await {
                 log::debug!("RECV {msg:?} from {}", &state.bot_id);
                 if let Err(e) = Self::handle_service_msg_in(&state, msg).await {
                     log::error!("{e}");
                 }
+            }
+        });
+
+        tokio::spawn(async move {
+            if let Some(_) = tasks.join_next().await {
+                log::error!("Terminating ActorController");
+                tasks.abort_all();
             }
         });
     }

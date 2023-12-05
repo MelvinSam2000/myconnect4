@@ -1,19 +1,22 @@
+use opentelemetry::global;
+use opentelemetry::trace::Span;
+use opentelemetry::trace::Tracer;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
+use tokio::task::JoinSet;
+use tokio::time::sleep;
 
 use super::BUFFER_MAX;
+use crate::actor::HB_SEND_DUR;
 use crate::game::GameOver;
 use crate::repo::Connect4Repo;
 
 #[derive(Debug)]
 pub enum MessageIn {
-    HeartBeat {
-        respond_to: oneshot::Sender<()>,
-    },
     NewGame {
         users: (String, String),
     },
@@ -31,6 +34,7 @@ pub enum MessageIn {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum MessageOut {
+    HeartBeat,
     NewGame {
         game_id: u64,
         users: (String, String),
@@ -88,8 +92,6 @@ enum ActorSendError {
     MessageIn(#[from] SendError<MessageIn>),
     #[error("Error sending msg: {0}")]
     MessageOut(#[from] SendError<MessageOut>),
-    #[error("Error sending oneshot")]
-    Oneshot,
 }
 
 impl GameActor {
@@ -114,13 +116,38 @@ impl GameActor {
         } = self;
 
         log::debug!("Game actor started.");
+        let mut tasks = JoinSet::new();
         // listen for incoming events
-        tokio::spawn(async move {
+        let state_1 = state.clone();
+        tasks.spawn(async move {
+            let state = state_1;
+            let tracer = global::tracer("Game Actor");
             while let Some(msg) = rx_in.recv().await {
+                let mut span = tracer.start(format!("G RECV {msg:?}"));
                 log::debug!("RECV {msg:?}");
                 if let Err(e) = Self::handle_msg_in(&state, &mut repo, msg).await {
                     log::error!("{e}");
                 }
+                span.end();
+            }
+        });
+
+        // send heartbeat
+        let state_2 = state.clone();
+        tasks.spawn(async move {
+            let state = state_2;
+            loop {
+                sleep(HB_SEND_DUR).await;
+                if let Err(e) = state.tx_out.send(MessageOut::HeartBeat).await {
+                    log::error!("Could not send HB: {e}");
+                }
+            }
+        });
+
+        tokio::spawn(async move {
+            if let Some(_) = tasks.join_next().await {
+                log::error!("Terminating Game Actor");
+                tasks.abort_all();
             }
         });
     }
@@ -131,9 +158,6 @@ impl GameActor {
         msg: MessageIn,
     ) -> Result<(), ActorSendError> {
         match msg {
-            MessageIn::HeartBeat { respond_to } => {
-                respond_to.send(()).map_err(|_| ActorSendError::Oneshot)?;
-            }
             MessageIn::NewGame { users } => {
                 let game0 = repo.get_game_id(&users.0);
                 let game1 = repo.get_game_id(&users.1);
