@@ -1,6 +1,3 @@
-use opentelemetry::global;
-use opentelemetry::trace::Span;
-use opentelemetry::trace::Tracer;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
@@ -121,14 +118,11 @@ impl GameActor {
         let state_1 = state.clone();
         tasks.spawn(async move {
             let state = state_1;
-            let tracer = global::tracer("Game Actor");
             while let Some(msg) = rx_in.recv().await {
-                let mut span = tracer.start(format!("G RECV {msg:?}"));
                 log::debug!("RECV {msg:?}");
                 if let Err(e) = Self::handle_msg_in(&state, &mut repo, msg).await {
                     log::error!("{e}");
                 }
-                span.end();
             }
         });
 

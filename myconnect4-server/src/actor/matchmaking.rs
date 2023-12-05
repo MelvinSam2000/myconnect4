@@ -1,9 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use opentelemetry::global;
-use opentelemetry::trace::Span;
-use opentelemetry::trace::Tracer;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
@@ -102,14 +99,11 @@ impl MatchMakingActor {
         let state_1 = state.clone();
         tasks.spawn(async move {
             let state = state_1;
-            let tracer = global::tracer("MM Actor");
             while let Some(msg) = rx_in.recv().await {
-                let mut span = tracer.start(format!("MM RECV {msg:?}"));
                 log::debug!("RECV {msg:?}");
                 if let Err(e) = Self::handle_msg_in(&state, msg).await {
                     log::error!("{e}");
                 }
-                span.end();
             }
         });
 

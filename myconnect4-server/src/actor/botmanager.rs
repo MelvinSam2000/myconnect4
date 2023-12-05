@@ -2,9 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use either::Either;
-use opentelemetry::global;
-use opentelemetry::trace::Span;
-use opentelemetry::trace::Tracer;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::SendError;
@@ -133,13 +130,10 @@ impl BotManagerActor {
         tasks.spawn(async move {
             let state = state_1;
             while let Some(msg) = rx_in.recv().await {
-                let tracer = global::tracer("Bot Manager Actor");
-                let mut span = tracer.start(format!("BM RECV {msg:?}"));
                 log::debug!("RECV {msg:?}");
                 if let Err(e) = Self::handle_msg_in(&state, msg).await {
                     log::error!("{e}");
                 }
-                span.end();
             }
         });
 
@@ -147,10 +141,7 @@ impl BotManagerActor {
         let state_2 = state.clone();
         tasks.spawn(async move {
             let state = state_2;
-
-            let tracer = global::tracer("Bot Manager Actor");
             while let Some(msg) = rx_s_in.recv().await {
-                let mut span = tracer.start(format!("BM RECV {msg:?}"));
                 log::debug!("RECV {msg:?}");
                 let service::MessageIn { user, inner } = msg;
                 if let Err(e) =
@@ -158,7 +149,6 @@ impl BotManagerActor {
                 {
                     log::error!("Error sending message to bot '{}' due to: {}", &user, e);
                 }
-                span.end();
             }
         });
 
