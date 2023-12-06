@@ -153,7 +153,7 @@ impl MatchMakingActor {
         });
 
         tokio::spawn(async move {
-            if let Some(_) = tasks.join_next().await {
+            if tasks.join_next().await.is_some() {
                 log::error!("Terminating MatchMaking Actor");
                 tasks.abort_all();
             }

@@ -37,12 +37,12 @@ pub struct BotActor {
 
 #[derive(Clone)]
 struct ActorState {
-    bot_id: String,
     tx_in: Sender<MessageIn>,
     #[allow(dead_code)]
     tx_out: Sender<MessageOut>,
     tx_s_in: Sender<service::MessageInInner>,
     tx_s_out: Sender<service::MessageOut>,
+    bot_id: String,
     bot_state: Arc<Mutex<BotState>>,
     perma_play: Arc<AtomicBool>,
 }
@@ -148,7 +148,7 @@ impl BotActor {
         });
 
         tokio::spawn(async move {
-            if let Some(_) = tasks.join_next().await {
+            if tasks.join_next().await.is_some() {
                 log::error!("Terminating ActorController");
                 tasks.abort_all();
             }
@@ -187,9 +187,9 @@ impl BotActor {
         match msg {
             MessageIn::SearchForGame => {
                 let mut botstate = state.bot_state.lock().await;
-                let BotState::Idle = *botstate else {
+                if !matches!(*botstate, BotState::Idle) {
                     return Ok(());
-                };
+                }
                 *botstate = BotState::Searching;
                 drop(botstate);
                 state
@@ -202,11 +202,7 @@ impl BotActor {
             }
             MessageIn::QueryIdle { respond_to } => {
                 let botstate = state.bot_state.lock().await;
-                let idle = if let BotState::Idle = *botstate {
-                    true
-                } else {
-                    false
-                };
+                let idle = matches!(*botstate, BotState::Idle);
                 drop(botstate);
                 respond_to.send(idle).map_err(|_| ActorSendError::Oneshot)?;
             }
@@ -240,7 +236,7 @@ impl BotActor {
                 *state.bot_state.lock().await = BotState::Playing { game };
             }
             service::MessageInInner::MoveValid { valid } => {
-                if valid == false {
+                if !valid {
                     log::error!("{} made an invalid move?", &state.bot_id);
                 }
             }

@@ -185,7 +185,7 @@ impl ServiceActor {
         });
 
         tokio::spawn(async move {
-            if let Some(_) = tasks.join_next().await {
+            if tasks.join_next().await.is_some() {
                 log::error!("Terminating Service Actor");
                 tasks.abort_all();
             }

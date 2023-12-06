@@ -257,7 +257,7 @@ impl ActorController {
             }
         });
 
-        if let Some(_) = tasks.join_next().await {
+        if tasks.join_next().await.is_some() {
             log::error!("Terminating ActorController");
             tasks.abort_all();
         }
@@ -312,7 +312,7 @@ impl ActorController {
                 state
                     .tx_bm_in
                     .send(bm::MessageIn::SpawnSeveral { number })
-                    .await?
+                    .await?;
             }
             s::MessageOutInner::HeartBeat => {
                 state
