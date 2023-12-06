@@ -2,7 +2,7 @@ MAJOR FEATURE (SERVER)
 [x] Handle send errors
 [ ] Keep game history
 [x] Heartbeat signals for BM and Service
-[ ] Tracing
+
 
 MAJOR FEATURE (CLIENT)
 [ ] Android app
@@ -14,6 +14,7 @@ MINOR FEATURE
 [ ] Zip logs
 [ ] Handle idle during game
 [ ] Secure server state query endpoint
+[ ] Tracing
 
 MAJOR BUG
 [ ] Deadlock under really high load
