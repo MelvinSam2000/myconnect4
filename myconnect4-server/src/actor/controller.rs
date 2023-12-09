@@ -47,7 +47,7 @@ struct ActorState {
     tx_s_in: Sender<s::MessageIn>,
     tx_bm_in: Sender<bm::MessageIn>,
     tx_bms_in: Sender<s::MessageIn>,
-    map_hb_times: Arc<RwLock<HashMap<ActorType, Instant>>>,
+    map_hb_times: Arc<HashMap<ActorType, RwLock<Instant>>>,
 }
 
 #[derive(Debug, Error)]
@@ -100,13 +100,7 @@ impl ActorController {
         let tx_bm_in = bm_actor.get_sender();
         let tx_bms_in = bm_actor.get_service_sender();
 
-        let now = Instant::now();
-        let map_hb_times = Arc::new(RwLock::new(HashMap::from([
-            (ActorType::MatchMaking, now),
-            (ActorType::Game, now),
-            (ActorType::Service, now),
-            (ActorType::BotManager, now),
-        ])));
+        let map_hb_times = Self::map_hb_times_new();
 
         Self {
             state: ActorState {
@@ -148,7 +142,7 @@ impl ActorController {
         let tx_bm_in = bm_actor.get_sender();
         let tx_bms_in = bm_actor.get_service_sender();
 
-        let map_hb_times = Arc::new(RwLock::new(HashMap::new()));
+        let map_hb_times = Self::map_hb_times_new();
 
         Self {
             state: ActorState {
@@ -204,9 +198,9 @@ impl ActorController {
             let state = state_1;
             loop {
                 sleep(HB_RECV_WAIT_LIMIT).await;
-                let rmap = state.map_hb_times.read().await;
-                rmap.iter().for_each(|(actor, time_of_hb)| {
-                    let elapsed = time_of_hb.elapsed();
+
+                for (actor, time_of_hb) in state.map_hb_times.iter() {
+                    let elapsed = time_of_hb.read().await.elapsed();
                     if elapsed > HB_RECV_WAIT_LIMIT {
                         log::warn!(
                             "Have not received HB from {:?} actor since {}s ago",
@@ -214,7 +208,7 @@ impl ActorController {
                             elapsed.as_secs()
                         );
                     }
-                });
+                }
             }
         });
 
@@ -315,11 +309,14 @@ impl ActorController {
                     .await?;
             }
             s::MessageOutInner::HeartBeat => {
-                state
+                let mut wtime = state
                     .map_hb_times
+                    .get(&ActorType::Service)
+                    .unwrap()
                     .write()
-                    .await
-                    .insert(ActorType::Service, Instant::now());
+                    .await;
+
+                *wtime = Instant::now();
             }
         }
         Ok(())
@@ -337,11 +334,14 @@ impl ActorController {
                 state.tx_bm_in.send(bm::MessageIn::QueueOne).await?;
             }
             mm::MessageOut::HeartBeat => {
-                state
+                let mut wtime = state
                     .map_hb_times
+                    .get(&ActorType::MatchMaking)
+                    .unwrap()
                     .write()
-                    .await
-                    .insert(ActorType::MatchMaking, Instant::now());
+                    .await;
+
+                *wtime = Instant::now();
             }
         }
         Ok(())
@@ -488,11 +488,14 @@ impl ActorController {
                 .await?;
             }
             g::MessageOut::HeartBeat => {
-                state
+                let mut wtime = state
                     .map_hb_times
+                    .get(&ActorType::Game)
+                    .unwrap()
                     .write()
-                    .await
-                    .insert(ActorType::Game, Instant::now());
+                    .await;
+
+                *wtime = Instant::now();
             }
         }
         Ok(())
@@ -504,11 +507,14 @@ impl ActorController {
     ) -> Result<(), ActorSendError> {
         match msg {
             bm::MessageOut::HeartBeat => {
-                state
+                let mut wtime = state
                     .map_hb_times
+                    .get(&ActorType::BotManager)
+                    .unwrap()
                     .write()
-                    .await
-                    .insert(ActorType::BotManager, Instant::now());
+                    .await;
+
+                *wtime = Instant::now();
             }
         }
         Ok(())
@@ -522,5 +528,20 @@ impl ActorController {
         tx_s_in.send(msg.clone()).await?;
         tx_bms_in.send(msg).await?;
         Ok(())
+    }
+
+    fn map_hb_times_new() -> Arc<HashMap<ActorType, RwLock<Instant>>> {
+        let actortypes: Vec<ActorType> = vec![
+            ActorType::MatchMaking,
+            ActorType::Game,
+            ActorType::Service,
+            ActorType::BotManager,
+        ];
+        let now = Instant::now();
+        Arc::new(HashMap::from_iter(
+            actortypes
+                .into_iter()
+                .map(|actortype| (actortype, RwLock::new(now))),
+        ))
     }
 }

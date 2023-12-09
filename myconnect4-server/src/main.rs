@@ -16,12 +16,18 @@ fn init_logs() {
         .init();
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    init_logs();
-    let actor_controller = ActorController::new();
-    actor_controller.run_all().await;
-    Ok(())
+fn main() {
+    let main_task = async {
+        init_logs();
+        let actor_controller = ActorController::new();
+        actor_controller.run_all().await;
+    };
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(4)
+        .build()
+        .expect("Could not start tokio runtime")
+        .block_on(main_task);
 }
 
 #[cfg(test)]
