@@ -51,7 +51,7 @@ struct ActorState {
 }
 
 #[derive(Debug, Error)]
-enum ActorSendError {
+enum ActorChannelError {
     #[error("Error sending matchmaking msg: {0}")]
     MatchmakingMessageIn(#[from] SendError<mm::MessageIn>),
     #[error("Error sending matchmaking msg: {0}")]
@@ -260,7 +260,7 @@ impl ActorController {
     async fn handle_msg_s_out(
         state: &ActorState,
         msg: s::MessageOut,
-    ) -> Result<(), ActorSendError> {
+    ) -> Result<(), ActorChannelError> {
         let s::MessageOut { user, inner: msg } = msg;
         match msg {
             s::MessageOutInner::SearchGame => {
@@ -300,7 +300,7 @@ impl ActorController {
                 };
                 respond_to
                     .send((mm_state, g_state))
-                    .map_err(|_| ActorSendError::Oneshot)?;
+                    .map_err(|_| ActorChannelError::Oneshot)?;
             }
             s::MessageOutInner::SpawnSeveralBots { number } => {
                 state
@@ -309,13 +309,7 @@ impl ActorController {
                     .await?;
             }
             s::MessageOutInner::HeartBeat => {
-                let mut wtime = state
-                    .map_hb_times
-                    .get(&ActorType::Service)
-                    .unwrap()
-                    .write()
-                    .await;
-
+                let mut wtime = state.map_hb_times[&ActorType::Service].write().await;
                 *wtime = Instant::now();
             }
         }
@@ -325,7 +319,7 @@ impl ActorController {
     async fn handle_msg_mm_out(
         state: &ActorState,
         msg: mm::MessageOut,
-    ) -> Result<(), ActorSendError> {
+    ) -> Result<(), ActorChannelError> {
         match msg {
             mm::MessageOut::UsersFound { users } => {
                 state.tx_g_in.send(g::MessageIn::NewGame { users }).await?;
@@ -334,13 +328,7 @@ impl ActorController {
                 state.tx_bm_in.send(bm::MessageIn::QueueOne).await?;
             }
             mm::MessageOut::HeartBeat => {
-                let mut wtime = state
-                    .map_hb_times
-                    .get(&ActorType::MatchMaking)
-                    .unwrap()
-                    .write()
-                    .await;
-
+                let mut wtime = state.map_hb_times[&ActorType::MatchMaking].write().await;
                 *wtime = Instant::now();
             }
         }
@@ -350,7 +338,7 @@ impl ActorController {
     async fn handle_msg_g_out(
         state: &ActorState,
         msg: g::MessageOut,
-    ) -> Result<(), ActorSendError> {
+    ) -> Result<(), ActorChannelError> {
         match msg {
             g::MessageOut::NewGame {
                 game_id,
@@ -488,13 +476,7 @@ impl ActorController {
                 .await?;
             }
             g::MessageOut::HeartBeat => {
-                let mut wtime = state
-                    .map_hb_times
-                    .get(&ActorType::Game)
-                    .unwrap()
-                    .write()
-                    .await;
-
+                let mut wtime = state.map_hb_times[&ActorType::Game].write().await;
                 *wtime = Instant::now();
             }
         }
@@ -504,16 +486,10 @@ impl ActorController {
     async fn handle_msg_bm_out(
         state: &ActorState,
         msg: bm::MessageOut,
-    ) -> Result<(), ActorSendError> {
+    ) -> Result<(), ActorChannelError> {
         match msg {
             bm::MessageOut::HeartBeat => {
-                let mut wtime = state
-                    .map_hb_times
-                    .get(&ActorType::BotManager)
-                    .unwrap()
-                    .write()
-                    .await;
-
+                let mut wtime = state.map_hb_times[&ActorType::BotManager].write().await;
                 *wtime = Instant::now();
             }
         }
@@ -524,7 +500,7 @@ impl ActorController {
         tx_s_in: &Sender<s::MessageIn>,
         tx_bms_in: &Sender<s::MessageIn>,
         msg: s::MessageIn,
-    ) -> Result<(), ActorSendError> {
+    ) -> Result<(), ActorChannelError> {
         tx_s_in.send(msg.clone()).await?;
         tx_bms_in.send(msg).await?;
         Ok(())

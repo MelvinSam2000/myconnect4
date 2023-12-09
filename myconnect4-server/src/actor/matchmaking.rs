@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use super::BUFFER_MAX;
 use crate::actor::HB_SEND_DUR;
 
-const DEFAULT_WAIT_LIMIT: Duration = Duration::from_millis(10000);
+const DEFAULT_WAIT_LIMIT: Duration = Duration::from_millis(5000);
 
 #[derive(Debug)]
 pub enum MessageIn {
@@ -62,7 +62,7 @@ struct ActorState {
 }
 
 #[derive(Debug, Error)]
-enum ActorSendError {
+enum ActorChannelError {
     #[error("Error sending msg: {0}")]
     MessageIn(#[from] SendError<MessageIn>),
     #[error("Error sending msg: {0}")]
@@ -160,7 +160,7 @@ impl MatchMakingActor {
         });
     }
 
-    async fn handle_msg_in(state: &ActorState, msg: MessageIn) -> Result<(), ActorSendError> {
+    async fn handle_msg_in(state: &ActorState, msg: MessageIn) -> Result<(), ActorChannelError> {
         match msg {
             MessageIn::Search { user } => {
                 let rqueue = state.queue.read().await;

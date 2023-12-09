@@ -4,6 +4,11 @@ MAJOR FEATURE (SERVER)
 [x] Heartbeat signals for BM and Service
 [ ] IP Configurator
 [x] Concurrent Hashmap
+[x] Minimax bg thread
+[ ] Minimax rayon
+[x] ActorChannelError
+[x] Remove unwraps
+[ ] Move const declarations
 
 
 MAJOR FEATURE (CLIENT)
@@ -12,11 +17,12 @@ MAJOR FEATURE (CLIENT)
 
 MINOR FEATURE
 [ ] TLS
-[ ] Minimax
 [ ] Zip logs
 [ ] Handle idle during game
 [ ] Secure server state query endpoint
 [ ] Tracing
+[ ] Musl target
+[ ] Jemalloc
 
 MAJOR BUG
 [ ] Deadlock under really high load

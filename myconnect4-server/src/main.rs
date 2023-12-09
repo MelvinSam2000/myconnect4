@@ -3,7 +3,10 @@ pub mod myconnect4 {
 }
 pub mod actor;
 pub mod game;
+pub mod minimax;
 pub mod repo;
+
+const NUM_TOKIO_CPU_CORES: usize = 2;
 
 use env_logger::Builder;
 use env_logger::Env;
@@ -24,7 +27,7 @@ fn main() {
     };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(4)
+        .worker_threads(NUM_TOKIO_CPU_CORES)
         .build()
         .expect("Could not start tokio runtime")
         .block_on(main_task);

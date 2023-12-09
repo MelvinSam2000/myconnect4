@@ -6,7 +6,7 @@ pub enum GameOver {
     Draw,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Connect4Game {
     board: [[Option<bool>; COLS]; ROWS],
     pub users: (String, String),

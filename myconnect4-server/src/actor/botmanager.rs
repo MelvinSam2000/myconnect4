@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::thread;
 
 use either::Either;
 use thiserror::Error;
@@ -17,6 +18,7 @@ use super::service;
 use super::BUFFER_MAX;
 use crate::actor::bot::BotActor;
 use crate::actor::HB_SEND_DUR;
+use crate::minimax;
 
 #[derive(Debug)]
 pub enum MessageIn {
@@ -50,7 +52,7 @@ struct ActorState {
 }
 
 #[derive(Debug, Error)]
-enum ActorSendError {
+enum ActorChannelError {
     #[error("Error sending msg: {0}")]
     MessageIn(#[from] SendError<MessageIn>),
     #[error("Error sending msg: {0}")]
@@ -64,7 +66,9 @@ enum ActorSendError {
     #[error("Error sending msg: {0}")]
     BotMessageOut(#[from] SendError<bot::MessageOut>),
     #[error("Error sending oneshot")]
-    Oneshot,
+    OneshotSend,
+    #[error("Error receiving oneshot")]
+    OneshotRecv,
 }
 
 impl BotManagerActor {
@@ -102,7 +106,7 @@ impl BotManagerActor {
         >,
         bot_id: &str,
         msg: Either<bot::MessageIn, service::MessageInInner>,
-    ) -> Result<(), ActorSendError> {
+    ) -> Result<(), ActorChannelError> {
         let map_bots = map_bots.read().await;
         let Some((bsender, ssender)) = map_bots.get(bot_id) else {
             return Ok(());
@@ -164,13 +168,24 @@ impl BotManagerActor {
             }
         });
 
-        // listening for bot events
-        tasks.spawn(async move {
-            while let Some(msg) = rx_b_out.recv().await {
-                match msg {
-                    bot::MessageOut::Nothing => {
-                        log::debug!("RECV {msg:?}");
-                        log::warn!("Ignoring for now");
+        // minimax thread
+        thread::spawn(move || {
+            while let Some(evt) = rx_b_out.blocking_recv() {
+                match evt {
+                    bot::MessageOut::MinimaxRequest {
+                        mut game,
+                        respond_to,
+                    } => {
+                        log::debug!("MINIMAX THREAD RECV: \n{}", game.board_to_str());
+
+                        let bot_move = minimax::best_move(&mut game);
+
+                        if let Err(e) = respond_to.send((game, bot_move)) {
+                            log::error!(
+                                "Minimax thread cannot respond back to game {}",
+                                e.0.game_id
+                            );
+                        }
                     }
                 }
             }
@@ -184,41 +199,49 @@ impl BotManagerActor {
         });
     }
 
-    async fn handle_msg_in(state: &ActorState, msg: MessageIn) -> Result<(), ActorSendError> {
+    async fn handle_msg_in(state: &ActorState, msg: MessageIn) -> Result<(), ActorChannelError> {
         match msg {
             MessageIn::HeartBeat { respond_to } => {
-                respond_to.send(()).map_err(|_| ActorSendError::Oneshot)?;
+                respond_to
+                    .send(())
+                    .map_err(|_| ActorChannelError::OneshotSend)?;
             }
             MessageIn::QueueOne => {
                 let rmap_bots = state.map_bots.read().await;
+                let channels = rmap_bots.values().cloned().collect::<Vec<_>>();
+                drop(rmap_bots);
 
-                let mut tasks = JoinSet::new();
-                rmap_bots
-                    .values()
+                let mut tasks: JoinSet<Result<(bool, Sender<bot::MessageIn>), ActorChannelError>> =
+                    JoinSet::new();
+                channels
+                    .into_iter()
                     .map(|(sender, _)| {
                         let (tx, rx) = oneshot::channel();
-                        let sender = sender.clone();
                         async move {
                             sender
                                 .send(bot::MessageIn::QueryIdle { respond_to: tx })
-                                .await
-                                .unwrap();
-                            let is_idle = rx.await.unwrap();
-                            (is_idle, sender)
+                                .await?;
+                            let is_idle = rx.await.map_err(|_| ActorChannelError::OneshotRecv)?;
+                            Ok((is_idle, sender))
                         }
                     })
                     .for_each(|task| {
                         tasks.spawn(task);
                     });
 
-                while let Some(Ok((is_idle, sender))) = tasks.join_next().await {
-                    if is_idle {
-                        sender.send(bot::MessageIn::SearchForGame).await?;
-                        return Ok(());
+                while let Some(Ok(res)) = tasks.join_next().await {
+                    match res {
+                        Ok((is_idle, sender)) => {
+                            if is_idle {
+                                sender.send(bot::MessageIn::SearchForGame).await?;
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("{e}");
+                        }
                     }
                 }
-
-                drop(rmap_bots);
 
                 let bot_id =
                     Self::spawn_bot(&state.map_bots, &state.tx_b_out, &state.tx_s_out).await;
@@ -231,7 +254,7 @@ impl BotManagerActor {
             }
             MessageIn::SpawnSeveral { number } => {
                 let map_bots = state.map_bots.clone();
-                let mut tasks: JoinSet<Result<(), ActorSendError>> = JoinSet::new();
+                let mut tasks: JoinSet<Result<(), ActorChannelError>> = JoinSet::new();
                 (0..number)
                     .map(|_| {
                         (

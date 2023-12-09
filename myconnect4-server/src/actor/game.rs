@@ -84,7 +84,7 @@ pub struct StatePayload {
 }
 
 #[derive(Debug, Error)]
-enum ActorSendError {
+enum ActorChannelError {
     #[error("Error sending msg: {0}")]
     MessageIn(#[from] SendError<MessageIn>),
     #[error("Error sending msg: {0}")]
@@ -150,7 +150,7 @@ impl GameActor {
         state: &ActorState,
         repo: &mut Connect4Repo,
         msg: MessageIn,
-    ) -> Result<(), ActorSendError> {
+    ) -> Result<(), ActorChannelError> {
         match msg {
             MessageIn::NewGame { users } => {
                 let game0 = repo.get_game_id(&users.0);

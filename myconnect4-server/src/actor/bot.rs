@@ -1,6 +1,6 @@
+use std::mem;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Duration;
 
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -10,12 +10,10 @@ use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
-use tokio::time::sleep;
 
 use super::service;
 use super::BUFFER_MAX;
 use crate::game::Connect4Game;
-use crate::game::COLS;
 
 #[derive(Debug)]
 pub enum MessageIn {
@@ -24,9 +22,12 @@ pub enum MessageIn {
     QueryIdle { respond_to: oneshot::Sender<bool> },
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum MessageOut {
-    Nothing,
+    MinimaxRequest {
+        game: Connect4Game,
+        respond_to: oneshot::Sender<(Connect4Game, Option<u8>)>,
+    },
 }
 
 pub struct BotActor {
@@ -54,7 +55,7 @@ pub enum BotState {
 }
 
 #[derive(Debug, Error)]
-enum ActorSendError {
+enum ActorChannelError {
     #[error("Error sending msg: {0}")]
     MessageIn(#[from] SendError<MessageIn>),
     #[error("Error sending msg: {0}")]
@@ -64,7 +65,9 @@ enum ActorSendError {
     #[error("Error sending msg: {0}")]
     ServiceMessageOut(#[from] SendError<service::MessageOut>),
     #[error("Error sending oneshot")]
-    Oneshot,
+    OneshotSend,
+    #[error("Error receiving oneshot")]
+    OneshotRecv,
 }
 
 impl std::fmt::Debug for BotState {
@@ -158,32 +161,36 @@ impl BotActor {
     async fn play(
         bot_id: &str,
         game: &mut Connect4Game,
+        tx_out: &Sender<MessageOut>,
         tx_s_out: &Sender<service::MessageOut>,
-    ) -> Result<(), ActorSendError> {
-        sleep(Duration::from_millis(300)).await;
-        let mut valid = false;
-        let mut col = 0;
-        for _ in 0..100 {
-            col = rand::random::<u8>() % COLS as u8;
-            if game.play_no_user(col) {
-                valid = true;
-                break;
-            }
-        }
-        if !valid {
-            log::debug!("Bot unable to make another move. Waiting on game over event.");
-            return Ok(());
-        }
-        tx_s_out
-            .send(service::MessageOut {
-                user: bot_id.to_string(),
-                inner: service::MessageOutInner::Move { col },
+    ) -> Result<(), ActorChannelError> {
+        let (tx, rx) = oneshot::channel();
+        let old_game = mem::take(game);
+        tx_out
+            .send(MessageOut::MinimaxRequest {
+                game: old_game,
+                respond_to: tx,
             })
             .await?;
+        let (new_game, bot_move) = rx.await.map_err(|_| ActorChannelError::OneshotRecv)?;
+        *game = new_game;
+        match bot_move {
+            Some(col) => {
+                tx_s_out
+                    .send(service::MessageOut {
+                        user: bot_id.to_string(),
+                        inner: service::MessageOutInner::Move { col },
+                    })
+                    .await?;
+            }
+            None => {
+                log::debug!("Bot unable to make another move. Waiting on game over event.");
+            }
+        }
         Ok(())
     }
 
-    async fn handle_msg_in(state: &ActorState, msg: MessageIn) -> Result<(), ActorSendError> {
+    async fn handle_msg_in(state: &ActorState, msg: MessageIn) -> Result<(), ActorChannelError> {
         match msg {
             MessageIn::SearchForGame => {
                 let mut botstate = state.bot_state.lock().await;
@@ -204,7 +211,9 @@ impl BotActor {
                 let botstate = state.bot_state.lock().await;
                 let idle = matches!(*botstate, BotState::Idle);
                 drop(botstate);
-                respond_to.send(idle).map_err(|_| ActorSendError::Oneshot)?;
+                respond_to
+                    .send(idle)
+                    .map_err(|_| ActorChannelError::OneshotSend)?;
             }
             MessageIn::PermaPlay(mode) => {
                 state
@@ -218,7 +227,7 @@ impl BotActor {
     async fn handle_service_msg_in(
         state: &ActorState,
         msg: service::MessageInInner,
-    ) -> Result<(), ActorSendError> {
+    ) -> Result<(), ActorChannelError> {
         match msg {
             service::MessageInInner::NewGame {
                 game_id,
@@ -231,7 +240,7 @@ impl BotActor {
                 let mut game =
                     Connect4Game::new_custom(game_id, state.bot_id.clone(), rival, first_turn);
                 if first_turn {
-                    Self::play(&state.bot_id, &mut game, &state.tx_s_out).await?;
+                    Self::play(&state.bot_id, &mut game, &state.tx_out, &state.tx_s_out).await?;
                 }
                 *state.bot_state.lock().await = BotState::Playing { game };
             }
@@ -253,7 +262,7 @@ impl BotActor {
                 if game.is_gameover().is_some() {
                     return Ok(());
                 }
-                Self::play(&state.bot_id, game, &state.tx_s_out).await?;
+                Self::play(&state.bot_id, game, &state.tx_out, &state.tx_s_out).await?;
             }
             service::MessageInInner::GameOver { won } => {
                 let result = match won {

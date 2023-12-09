@@ -99,7 +99,7 @@ struct ActorState {
 }
 
 #[derive(Debug, Error)]
-enum ActorSendError {
+enum ActorChannelError {
     #[error("Error sending msg: {0}")]
     MessageIn(#[from] SendError<MessageIn>),
     #[error("Error sending msg: {0}")]
@@ -352,7 +352,7 @@ impl ActorState {
         &self,
         tx: &Sender<GameEvent>,
         msg: MessageInInner,
-    ) -> Result<(), ActorSendError> {
+    ) -> Result<(), ActorChannelError> {
         match msg {
             MessageInInner::NewGame {
                 game_id,
@@ -404,7 +404,7 @@ impl ActorState {
         Ok(())
     }
 
-    async fn handle_game_evt(&self, user: &str, event: Event) -> Result<(), ActorSendError> {
+    async fn handle_game_evt(&self, user: &str, event: Event) -> Result<(), ActorChannelError> {
         match event {
             Event::Move(Move { col }) => {
                 let col = col as u8;
