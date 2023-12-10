@@ -33,9 +33,13 @@ use crate::myconnect4::GameOver;
 use crate::myconnect4::Move;
 use crate::myconnect4::MoveValid;
 use crate::myconnect4::NewGame;
+use crate::myconnect4::PastGame;
+use crate::myconnect4::PastGamesReq;
+use crate::myconnect4::PastGamesResp;
 use crate::myconnect4::ServerState;
 use crate::myconnect4::SpawnSeveral;
 use crate::myconnect4::Winner;
+use crate::repo::PastGameInfo;
 
 const CLIENT_BUFFER_MAX: usize = 100;
 
@@ -84,6 +88,10 @@ pub enum MessageOutInner {
         number: usize,
     },
     HeartBeat,
+    QueryPastGames {
+        num: usize,
+        respond_to: oneshot::Sender<Vec<PastGameInfo>>,
+    },
 }
 
 pub struct ServiceActor {
@@ -344,6 +352,57 @@ impl MyConnect4Service for ActorState {
                 Status::new(Code::Internal, "Internal server error")
             })?;
         Ok(Response::new(Empty {}))
+    }
+
+    async fn query_past_games(
+        &self,
+        req: Request<PastGamesReq>,
+    ) -> Result<Response<PastGamesResp>, Status> {
+        let num = req.into_inner().number as usize;
+        let (tx, rx) = oneshot::channel();
+        self.tx_out
+            .send(MessageOut {
+                user: "*".to_string(),
+                inner: MessageOutInner::QueryPastGames {
+                    num,
+                    respond_to: tx,
+                },
+            })
+            .await
+            .map_err(|e| {
+                log::error!("Could not send: {e}");
+                Status::new(Code::Internal, "Internal server error")
+            })?;
+        let past_games = rx
+            .await
+            .map_err(|e| {
+                log::error!("Could not recv: {e}");
+                Status::new(Code::Internal, "Internal server error")
+            })?
+            .into_iter()
+            .map(|(game, game_over, time)| {
+                let game_over = match game_over {
+                    None => "GAME ENDED ABRUPTLY".to_string(),
+                    Some(game_over) => match game_over {
+                        crate::game::GameOver::Winner(winner) => format!("VICTORY FOR {winner}"),
+                        crate::game::GameOver::Draw => "DRAW".to_string(),
+                    },
+                };
+
+                PastGame {
+                    game_id: game.game_id,
+                    board: game.board_to_str(),
+                    game_over,
+                    end_time: time.to_rfc3339(),
+                }
+            })
+            .collect();
+
+        //let pastgames = pastgames;
+
+        let out = PastGamesResp { past_games };
+
+        Ok(Response::new(out))
     }
 }
 

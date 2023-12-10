@@ -1,6 +1,6 @@
 MAJOR FEATURE (SERVER)
 [x] Handle send errors
-[ ] Keep game history
+[x] Keep game history
 [x] Heartbeat signals for BM and Service
 [x] Concurrent Hashmap
 [x] Minimax bg thread

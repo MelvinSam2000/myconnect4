@@ -11,6 +11,7 @@ use super::BUFFER_MAX;
 use crate::actor::HB_SEND_DUR;
 use crate::game::GameOver;
 use crate::repo::Connect4Repo;
+use crate::repo::PastGameInfo;
 
 #[derive(Debug)]
 pub enum MessageIn {
@@ -26,6 +27,10 @@ pub enum MessageIn {
     },
     QueryGetState {
         respond_to: oneshot::Sender<StatePayload>,
+    },
+    QueryPastGames {
+        num: usize,
+        respond_to: oneshot::Sender<Vec<PastGameInfo>>,
     },
 }
 
@@ -89,6 +94,8 @@ enum ActorChannelError {
     MessageIn(#[from] SendError<MessageIn>),
     #[error("Error sending msg: {0}")]
     MessageOut(#[from] SendError<MessageOut>),
+    #[error("Error sending oneshot")]
+    OneshotSend,
 }
 
 impl GameActor {
@@ -260,6 +267,12 @@ impl GameActor {
                     _num_users_playing: n_users,
                     _total_games_played: total_games_played,
                 });
+            }
+            MessageIn::QueryPastGames { num, respond_to } => {
+                let pastgames = repo.get_past_games(num);
+                respond_to
+                    .send(pastgames)
+                    .map_err(|_| ActorChannelError::OneshotSend)?;
             }
         }
         Ok(())

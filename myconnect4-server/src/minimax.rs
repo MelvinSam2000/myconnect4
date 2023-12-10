@@ -4,7 +4,7 @@ use rayon::iter::ParallelIterator;
 use crate::game::Connect4Game;
 use crate::game::COLS;
 
-const SEARCH_TREE_MAX_DEPTH: usize = 6;
+const SEARCH_TREE_MAX_DEPTH: usize = 5;
 
 pub fn best_move(game: &mut Connect4Game) -> Option<u8> {
     if game.is_gameover().is_some() {

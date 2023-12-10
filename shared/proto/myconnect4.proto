@@ -49,8 +49,24 @@ message SpawnSeveral {
   uint64 number = 1;
 }
 
+message PastGamesReq {
+  uint64 number = 1;
+}
+
+message PastGamesResp {
+  repeated PastGame past_games = 1;
+}
+
+message PastGame {
+  uint64 game_id = 1;
+  string board = 2;
+  string game_over = 3;
+  string end_time = 5;
+}
+
 service MyConnect4Service {
   rpc StreamEvents (stream GameEvent) returns (stream GameEvent);
   rpc QueryState (Empty) returns (ServerState);
   rpc SpawnSeveralBots (SpawnSeveral) returns (Empty);
+  rpc QueryPastGames (PastGamesReq) returns (PastGamesResp);
 }

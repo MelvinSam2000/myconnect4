@@ -312,6 +312,12 @@ impl ActorController {
                 let mut wtime = state.map_hb_times[&ActorType::Service].write().await;
                 *wtime = Instant::now();
             }
+            s::MessageOutInner::QueryPastGames { num, respond_to } => {
+                state
+                    .tx_g_in
+                    .send(g::MessageIn::QueryPastGames { num, respond_to })
+                    .await?;
+            }
         }
         Ok(())
     }

@@ -1,6 +1,7 @@
 pub(crate) const ROWS: usize = 6;
 pub(crate) const COLS: usize = 7;
 
+#[derive(Debug, Clone)]
 pub enum GameOver {
     Winner(String),
     Draw,
