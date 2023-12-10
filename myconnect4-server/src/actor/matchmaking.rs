@@ -15,7 +15,7 @@ use tokio::time::Instant;
 use super::BUFFER_MAX;
 use crate::actor::HB_SEND_DUR;
 
-const DEFAULT_WAIT_LIMIT: Duration = Duration::from_millis(5000);
+const DEFAULT_WAIT_LIMIT: Duration = Duration::from_millis(2000);
 
 #[derive(Debug)]
 pub enum MessageIn {

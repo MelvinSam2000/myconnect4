@@ -2,10 +2,9 @@ MAJOR FEATURE (SERVER)
 [x] Handle send errors
 [ ] Keep game history
 [x] Heartbeat signals for BM and Service
-[ ] IP Configurator
 [x] Concurrent Hashmap
 [x] Minimax bg thread
-[ ] Minimax rayon
+[x] Minimax rayon
 [x] ActorChannelError
 [x] Remove unwraps
 [ ] Move const declarations

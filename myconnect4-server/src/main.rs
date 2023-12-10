@@ -7,6 +7,7 @@ pub mod minimax;
 pub mod repo;
 
 const NUM_TOKIO_CPU_CORES: usize = 2;
+const NUM_RAYON_CPU_CORES: usize = 6;
 
 use env_logger::Builder;
 use env_logger::Env;
@@ -25,6 +26,10 @@ fn main() {
         let actor_controller = ActorController::new();
         actor_controller.run_all().await;
     };
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(NUM_RAYON_CPU_CORES)
+        .build_global()
+        .expect("Could not start rayon");
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(NUM_TOKIO_CPU_CORES)

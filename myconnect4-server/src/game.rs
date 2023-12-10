@@ -69,7 +69,7 @@ impl Connect4Game {
     pub fn play(&mut self, user: &str, col: u8) -> bool {
         let col = col as usize;
         if col >= COLS {
-            log::debug!("User {user} made invalid column for move: {col}");
+            log::warn!("User {user} made invalid column for move: {col}");
             return false;
         }
         let player = self.users.0 == user;
@@ -92,6 +92,28 @@ impl Connect4Game {
 
         self.turn = !self.turn;
 
+        true
+    }
+
+    pub fn undo_play(&mut self, col: u8) -> bool {
+        let col = col as usize;
+        if col >= COLS {
+            log::warn!("Undo play for invalid column: {col}");
+            return false;
+        }
+        let mut found = false;
+        for row in (0..ROWS).rev() {
+            if self.board[row][col].is_some() {
+                self.board[row][col] = None;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return false;
+        }
+        self.history.pop();
+        self.turn = !self.turn;
         true
     }
 
